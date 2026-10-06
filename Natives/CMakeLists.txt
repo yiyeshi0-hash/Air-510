@@ -445,6 +445,7 @@ add_executable(AngelAuraAmethyst
   input/ControllerInput.m
   input/GyroInput.m
   input/KeyboardInput.m
+  input/KeyboardIMEHost.m   # ★ [HWKBD-IME] IME 文本宿主状态(供 KeyboardInput/TrackedTextField 共用)
 
   AccountListViewController.m
   AccountLoginViewController.m

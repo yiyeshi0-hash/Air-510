@@ -306,6 +306,7 @@
 "preference.title.renderer.debug.metal" = "Metal (metallum)";
 "preference.title.renderer.debug.vgpu" = "VGPU (<=1.12) - gl4es fork, enhanced shader syntax, EXPERIMENTAL";
 "preference.title.renderer.debug.virgl" = "VirGL (<=26.2) - Mesa virgl guest + vtest server, EXPERIMENTAL";
+"preference.title.renderer.debug.nggl4es" = "Krypton Wrapper（≤26.2）- ZL2 同款 gl4es，老版本首选（原 NG-GL4ES）";
 "preference.title.renderer.debug.gl4eszl2" = "GL4ES (ZL2 classic) - string-rewrite GLSL to ESSL, EXPERIMENTAL";
 "preference.detail.renderer" = "更改使用的渲染器";
 "preference.title.resolution" = "分辨率缩放 (%)";
@@ -832,6 +833,7 @@
 "resman.mods.empty" = "还没有 Mod";
 "resman.mods.search_empty" = "没有匹配的 Mod";
 "resman.download.filter_empty" = "筛选无结果";
+"resman.download.filter_empty_26x" = "该资源源暂无 26.x 资源；可切换资源源（Modrinth / CurseForge）后重试";
 "resman.mods.none_selected" = "未选择任何 Mod";
 "resman.mods.no_local_for_update" = "没有本地 Mod 可检查更新。";
 "resman.mods.no_version_info" = "无法获取当前版本信息。";
@@ -2077,3 +2079,12 @@
 "home.instances.launch" = "启动";  // ★ [AUDIT-DECIDE]
 "multiplayer.unavailable.title" = "联机功能不可用";  // ★ [AUDIT-DECIDE]
 "multiplayer.unavailable.message" = "libterracotta 库未链接。请按 README 中「陶瓦联机集成」章节下载 xcframework 后重新构建。";  // ★ [AUDIT-DECIDE]
+"i18n_str_9104" = "%@ %@ 已创建（MC %@）。加载器库未装全，首次启动时将自动补齐。\n%@";  // ★ [FABRIC-COMPLETE]
+"i18n_str_9105" = "仍在下载 / 校验";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9106" = "还有 %ld 项正在下载或校验。完成后将自动启动游戏（不会再报缺件）。";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9107" = "等待下载完成后自动启动";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9108" = "启动已延后：本地仍缺 %ld 个必需文件。正在等待下载/校验完成……";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9109" = "等待超时：仍缺 %ld 个必需文件。为避免缺件报错，本次启动已取消；请等下载完成（或联网后）重试。";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9110" = "启动前校验/补齐游戏文件（本地校验，缺失才下载）";  // ★ [PREDL]
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT：权限已给，待验证";

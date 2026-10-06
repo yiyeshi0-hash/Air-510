@@ -187,3 +187,5 @@
 "preference.title.debug_show_layout_overlap" = "نمایش همپوشانی طرح";
 "preference.detail.debug_show_layout_overlap" = "هر نما را با یک رنگ شفاف پوشش دهید تا نماهای همپوشانی نشان داده شود.";
 "controller_configurator.playstation.title.named_back" = "انتخاب";
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

@@ -46,4 +46,16 @@ extern NSString * const kMinecraftResourceDownloadBackgroundSessionIdentifier;
 - (void)downloadVersion:(NSDictionary *)version;
 - (void)downloadModpackFromAPI:(ModpackAPI *)api detail:(NSDictionary *)modDetail atIndex:(NSUInteger)selectedVersion;
 
+// ★ [PREDL] 安装期“一次装全”：对刚写入的实例（Fabric/Quilt profile 等）执行完整的
+//   库 + 资源 + client.jar(伪库) 补齐，使首次启动【离线也能进】。
+//   - 复用启动期完全相同的解析/补齐逻辑（processVersion / tweakVersionJson /
+//     downloadClientLibraries / downloadClientAssets），保证「安装产物 == 启动所需」；
+//   - 不注册 DownloadTaskManager 任务（stageReportingEnabled=NO、currentDownloadTaskItem=nil），
+//     进度仅内部计数 ⇒ 不弹第二个统一进度页、不抢安装任务 UI；
+//   - 有界轮询等待完成（与 AiAssetTools/DownloadViewController 的 30 分钟轮询同口径）。
+//   语义：success=YES 表示安装期已把启动所需文件全部落地（可离线启动）；
+//        success=NO 表示仍有缺件（error.localizedDescription 列出），启动时才会现补。
+- (void)prefillVersionResources:(NSDictionary *)version
+                     completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
+
 @end

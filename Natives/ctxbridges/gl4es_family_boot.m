@@ -6,6 +6,7 @@
 //  来源：Gsjsjzhznsz/Air-Minecraft-iOS-Launcher（同一项目家族更晚的 fork）：
 //    - egl_bridge.m 的 ame204_gl4esProcResolver（Task204 后端符号解析钉扎）
 //    - ame211_gl4eszl2_boot（Task211 ZL2 经典版 gl4es，同构镜像）
+//    - ame208_nggl4es_boot（Task206 NG-GL4ES / "Krypton Wrapper"，同构镜像）
 //    - ctxbridges/virgl_server.m 的 ame_virgl_start_server（Task215 VirGL）
 //  这些逻辑对既有渲染器完全无副作用：
 //    - 每个入口第一件事就是比对手里的 AMETHYST_RENDERER，不匹配立即返回；
@@ -63,9 +64,9 @@ static void ame_gap_load_bundled_angle_egl(void) {
         : NULL;
 }
 
-// GL4ESZL2 的 MakeCurrent 后初始化（队友 ame211 的收敛）。
-// 该 vendored 树构建带 NO_INIT_CONSTRUCTOR + 显式 initialize_gl4es。
-// ★ [DROP-NGG4ES] 原与之共用的 NG-GL4ES（ame208）已随该支移除。
+// GL4ESZL2 / NG-GL4ES 的 MakeCurrent 后初始化（队友 ame211 / ame208 的收敛）。
+// 二者 vendored 树均构建带 NO_INIT_CONSTRUCTOR + 显式 initialize_gl4es，
+// 故共用同一实现，只是传入的 dylib 名不同。
 static void ame_gap_gl4es_family_init(const char *dylib) {
     void *h = dlopen(dylib, RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
     if (h == NULL) {
@@ -112,10 +113,16 @@ void ame_gap_gl4es_family_boot(void) {
     if (r == NULL) return;
 
     if (strcmp(r, RENDERER_NAME_GL4ESZL2) == 0) {
+        // GL4ESZL2：纯 C 字符串改写式着色器转换，无 glslang 依赖。
         ame_gap_gl4es_family_init(RENDERER_NAME_GL4ESZL2);
         s_done = 1;
+    } else if (strcmp(r, RENDERER_NAME_NGGL4ES) == 0) {
+        // NG-GL4ES（"Krypton Wrapper"，Task206）：glslang + SPIRV-Cross 着色器管线，
+        // 同一 NO_INIT_CONSTRUCTOR 契约——必须在本处（真上下文 current 后）显式
+        // initialize_gl4es()，否则硬件探测会命中系统 GLESv2 stub → SIGSEGV。
+        ame_gap_gl4es_family_init(RENDERER_NAME_NGGL4ES);
+        s_done = 1;
     } else if (strcmp(r, RENDERER_NAME_VGPU) == 0) {
-        // ★ [DROP-NGG4ES] 原 NG-GL4ES 分支（ame208_nggl4es_boot）已随该支移除。
         // VGPU 自带惰性装载器（pack/load_all）与构造器，无需宿主显式 initialize。
         NSLog(@"[RENDERER-GAP] VGPU selected: lazy loader handles GL init (no host initialize_gl4es)");
         s_done = 1;

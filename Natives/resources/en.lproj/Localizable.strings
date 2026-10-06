@@ -346,7 +346,7 @@
 /* ★ [RENDERER-GAP] imported from Gsjsjzhznsz/Air-Minecraft-iOS-Launcher */
 "preference.title.renderer.debug.vgpu" = "VGPU (<=1.12) - gl4es fork, enhanced shader syntax, EXPERIMENTAL";
 "preference.title.renderer.debug.virgl" = "VirGL (<=26.2) - Mesa virgl guest + vtest server, EXPERIMENTAL";
-/* ★ [DROP-NGG4ES] 原 "preference.title.renderer.debug.nggl4es" 文案已随该支移除。 */
+"preference.title.renderer.debug.nggl4es" = "Krypton Wrapper (≤26.2) - ZalithLauncher 2 gl4es, first choice for legacy versions (formerly NG-GL4ES)";
 "preference.title.renderer.debug.gl4eszl2" = "GL4ES (ZL2 classic) - string-rewrite GLSL to ESSL, EXPERIMENTAL";
 
 "preference.detail.renderer" = "Change the OpenGL render engine to use. Zink is temporarily disabled on iOS 16 and later to diagnose issues.";
@@ -964,6 +964,7 @@
 "resman.mods.empty" = "No mods yet";
 "resman.mods.search_empty" = "No matching mods";
 "resman.download.filter_empty" = "No results match the current filters";
+"resman.download.filter_empty_26x" = "This source has no 26.x resources; try switching the source (Modrinth / CurseForge)";
 "resman.mods.none_selected" = "No mods selected";
 "resman.mods.no_local_for_update" = "There are no local mods to check for updates.";
 "resman.mods.no_version_info" = "Unable to get the current version info.";
@@ -2244,3 +2245,12 @@
 "home.instances.launch" = "Launch";  // ★ [AUDIT-DECIDE]
 "multiplayer.unavailable.title" = "Multiplayer unavailable";  // ★ [AUDIT-DECIDE]
 "multiplayer.unavailable.message" = "The libterracotta library is not linked. Follow the “Terracotta integration” section in the README to download the xcframework, then rebuild the app.";  // ★ [AUDIT-DECIDE]
+"i18n_str_9104" = "%@ %@ created (MC %@). Loader libraries are not fully installed yet; they will be fetched automatically on first launch.\n%@";  // ★ [FABRIC-COMPLETE]
+"i18n_str_9105" = "Still downloading / verifying";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9106" = "%ld item(s) are still downloading or being verified. The game will launch automatically once they finish (avoids missing-file errors).";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9107" = "Wait and launch when finished";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9108" = "Launch deferred: %ld required file(s) are still missing locally. Waiting for download/verification to finish…";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9109" = "Timed out: %ld required file(s) are still missing. The launch was cancelled to avoid a missing-file error. Let the download finish (or go online) and try again.";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9110" = "Checking / fetching game files before launch (local check; downloads only what's missing)";  // ★ [PREDL]
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

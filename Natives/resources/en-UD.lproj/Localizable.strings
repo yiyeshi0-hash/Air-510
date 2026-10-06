@@ -207,3 +207,5 @@
 "preference.detail.debug_show_layout_bounds" = "suᴉƃɹɐɯ 'spunoq dᴉlɔ ʍoɥS";
 "preference.title.debug_show_layout_overlap" = "ƃuᴉddɐlɹǝʌo ʇnoʎɐl ʍoɥS";
 "preference.detail.debug_show_layout_overlap" = "˙sʍǝᴉʌ ƃuᴉddɐlɹǝʌo lɐǝʌǝɹ oʇ ɹoloɔ ʇuǝɹɐdsuɐɹʇ ɐ ɥʇᴉʍ ʍǝᴉʌ ʎɹǝʌǝ ʎɐlɹǝʌO";
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

@@ -70,3 +70,5 @@
 "preference.detail.debug_auto_correction" = "Lubab mängus teksti kirjutamisel automaatparanduse.";
 "preference.title.debug_hide_home_indicator" = "Peida koduindikaator";
 "preference.detail.debug_hide_home_indicator" = "See keelab koduindikaatori lukustamise. Koduindikaatori samal ajal peitmiseks ja lukustamiseks pead kasutama Guided Access'i.";
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

@@ -96,14 +96,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # [fix] 上游的 "Remove stale MobileGL gitlink" 在本 fork 上会让 MobileGlues 内容丢失,
-      # 导致 dep_mg 的 CMake 报 "MobileGlues-cpp does not exist"。这里不删,直接跳过。
-      - name: Checkout repository submodules
-        env:
-          # MobileGL 上游 LFS 配额已用尽，其 LFS 文件（tools/trace_replay/fixtures）
-          # 与 iOS 构建无关，跳过 smudge 避免 submodule checkout 失败 exit 128
-          GIT_LFS_SKIP_SMUDGE: "1"
-        run: git submodule update --init --recursive
+      # ★ 换底后（新基线 = 上游 926629869）：第三方依赖已【整套 vendored 进 git】——
+      #   Natives/external/**（含 MobileGlues-cpp 的 3rdparty：glslang / SPIRV-Cross / glm / xxhash）、
+      #   ThirdParty/gl4es_extra_extra/**、ThirdParty/NG-GL4ES/** 全都在本树里，
+      #   不再有任何"需要联网拉取才有内容"的 gitlink ⇒ 取消 submodule 递归初始化。
+      #   为什么必须取消：基线里仍留有 ThirdParty/ZalithLauncher2 这个 gitlink，但
+      #   .gitmodules 已无对应 stanza（该仓库已不存在，构建也不引用它），
+      #   `git submodule update --init --recursive` 会直接 fatal: No url found … ⇒
+      #   整个 job 在 checkout 阶段就红。本步改为取证式打印，绝不因残留 gitlink 失败。
+      - name: Dependencies are vendored (no submodule fetch)
+        run: |
+          echo "★ 依赖整套 vendored，跳过 git submodule update --init --recursive"
+          echo "Natives/external tracked files: $(git ls-files Natives/external | wc -l)"
+          echo "ThirdParty/gl4es_extra_extra tracked files: $(git ls-files ThirdParty/gl4es_extra_extra | wc -l)"
+          echo "ThirdParty/NG-GL4ES tracked files: $(git ls-files ThirdParty/NG-GL4ES | wc -l)"
+          git submodule status --recursive >/dev/null 2>&1 || echo "(存在未注册的残留 gitlink —— 已知、构建不引用、忽略)"
 
       # ==== [speed] 依赖缓存 / ccache(由 yiyeshi0-hash 添加,提速 CI)====
       - name: Cache heavy 3rd-party builds (MobileGlues / glslang / SPIRV-Cross / LTW / SFPEW)

@@ -256,7 +256,7 @@
 /* ★ [RENDERER-GAP] imported from Gsjsjzhznsz/Air-Minecraft-iOS-Launcher */
 "preference.title.renderer.debug.vgpu" = "VGPU（≤1.12）- gl4es 分支，強化著色器語法，實驗性";
 "preference.title.renderer.debug.virgl" = "VirGL（≤26.2）- Mesa virgl guest + vtest 服務端，實驗性";
-/* ★ [DROP-NGG4ES] 原 "preference.title.renderer.debug.nggl4es" 文案已隨該支移除。 */
+"preference.title.renderer.debug.nggl4es" = "Krypton Wrapper（≤26.2）- ZL2 同款 gl4es，舊版本首選（原 NG-GL4ES）";
 "preference.title.renderer.debug.gl4eszl2" = "GL4ES（ZL2 經典版）- 字串改寫 GLSL→ESSL，實驗性";
 
 "preference.detail.renderer" = "改變要使用的OpenGL渲染引擎";
@@ -871,6 +871,7 @@
 "resman.mods.empty" = "還沒有 Mod";
 "resman.mods.search_empty" = "沒有符合的 Mod";
 "resman.download.filter_empty" = "篩選無結果";
+"resman.download.filter_empty_26x" = "該資源源暫無 26.x 資源；可切換資源源（Modrinth / CurseForge）後重試";
 "resman.mods.none_selected" = "未選擇任何 Mod";
 "resman.mods.no_local_for_update" = "沒有本機 Mod 可檢查更新。";
 "resman.mods.no_version_info" = "無法取得目前版本資訊。";
@@ -2246,3 +2247,18 @@
 "multiplayer.unavailable.title" = "連線功能無法使用";  // ★ [AUDIT-DECIDE]
 "multiplayer.unavailable.message" = "libterracotta 函式庫未連結。請依 README 中「陶瓦聯機整合」章節下載 xcframework 後重新建置。";  // ★ [AUDIT-DECIDE]
 "preference.profile.title.lwjgl_version" = "LWJGL 版本";  // ★ [AUDIT-DECIDE]
+"i18n_str_9104" = "%@ %@ 已建立（MC %@）。載入器函式庫未裝全，首次啟動時將自動補齊。\n%@";  // ★ [FABRIC-COMPLETE]
+"i18n_str_9105" = "仍在下載 / 驗證";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9106" = "還有 %ld 項正在下載或驗證。完成後將自動啟動遊戲（不會再報缺件）。";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9107" = "等待下載完成後自動啟動";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9108" = "啟動已延後：本機仍缺 %ld 個必要檔案。正在等待下載/驗證完成……";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9109" = "等待逾時：仍缺 %ld 個必要檔案。為避免缺件錯誤，本次啟動已取消；請等下载完成（或連線後）再試。";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9110" = "啟動前校驗/補齊遊戲檔案（本機校驗，缺失才下載）";  // ★ [PREDL]
+"i18n_str_9104" = "%@ %@ 已建立（MC %@）。載入器函式庫未裝全，首次啟動時將自動補齊。\n%@";  // ★ [FABRIC-COMPLETE]
+"i18n_str_9105" = "仍在下載 / 驗證";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9106" = "還有 %ld 項正在下載或驗證。完成後將自動啟動遊戲（不會再報缺件）。";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9107" = "等待下載完成後自動啟動";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9108" = "啟動已延後：本機仍缺 %ld 個必要檔案。正在等待下載/驗證完成……";  // ★ [LAUNCH-AFTER-DL]
+"i18n_str_9109" = "等待逾時：仍缺 %ld 個必要檔案。為避免缺件錯誤，本次啟動已取消；請等下载完成（或連線後）再試。";  // ★ [LAUNCH-AFTER-DL]
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT：權限已給，待驗證";

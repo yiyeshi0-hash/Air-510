@@ -2225,3 +2225,5 @@
 "preference.vi.wizard.sniff.miss" = "このバージョンのフォルダに mods / saves がありません";  // ★ [AUDIT-DECIDE]
 "preference.vi.wizard.sniff.noversion" = "具体的なバージョン id がありません";  // ★ [AUDIT-DECIDE]
 "preference.vi.wizard.title" = "バージョン分離の設定";  // ★ [AUDIT-DECIDE]
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

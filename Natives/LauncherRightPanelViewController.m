@@ -96,6 +96,14 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 // pendingLaunchAfterLogin=YES 表示用户从启动按钮进入账号登录，登录成功后应自动触发 launchGame。
 @property(nonatomic, assign) BOOL pendingLaunchAfterLogin;
 
+// ★ [LAUNCH-AFTER-DL] 时序/竞态修复：下载/校验尚未结束时点「启动」——
+//   绝不带着缺件启动。改为把启动【排队】到下载全部结束（任务管理器无 active 任务）后自动继续。
+@property(nonatomic, assign) BOOL pendingLaunchAfterDownload;
+@property(nonatomic, assign) BOOL pendingLaunchDownloadObserverInstalled;
+/// 启动准入重试次数：downloadVersion: 回调“完成”后仍需本地核对必需文件，
+/// 缺件时轮询等待（有界），不带着缺件进 JLI_Launch。
+@property(nonatomic, assign) NSInteger launchAdmissionRetryCount;
+
 @end
 
 @implementation LauncherRightPanelViewController
@@ -875,33 +883,46 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
 - (void)updateJITStatus {
     if (!self.jitStatusLabel) return;
-    BOOL enabled = isJITEnabled(NO);
-    // ★ [JB-ADAPT] 越狱环境：isJITEnabled 已收紧为"真实证据"（不再看 isJailbroken），
-    //   越狱原生 JIT 不置 CS_DEBUGGED、也无 dynamic-codesigning entitlement ⇒ 上面会得
-    //   假；这里用**执行式真能力判据**补正（★ [JIT-CACHE]：真的写一条指令进匿名页并执行它，
-    //   不再只看 mprotect(RX) —— 那是假阳性），避免状态误报"未开启"。
-    //   ⚠ 也因此，"越狱但页其实不可执行"的机器现在会正确显示"未开启"而不是绿色假象。
-    if (!enabled && AMEJailbreakNativeJITPathApplies() && AMEJailbreakNativeJITReady()) {
-        enabled = YES;
-    }
-    // 三态显示（议题 #133）：TXM 机型上 JIT 可能"已启用"（CS_DEBUGGED 置位）
-    // 而服务 brk #0x69 的调试器已脱离——这是预期可恢复状态（启动时自动重附加），
-    // 用琥珀色区别于红色"未开启"，两边都不误报。
-    if (enabled && DeviceHasJITFlags(JIT_FLAG_FORCE_MIRRORED | JIT_FLAG_HAS_TXM) &&
-        !JIT26IsLikelyDebuggerKeepAttached()) {
-        self.jitStatusLabel.text = localize(@"i18n_str_jit26_pending", nil);
-        self.jitStatusLabel.textColor = [UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0];
-        self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0] colorWithAlphaComponent:0.15];
-    } else if (enabled) {
+    // ★ [JIT-ENV] 进启动器时自动识别环境并(必要时)主动申请 JIT（只跑一次，异步）。
+    [self ameAutoEnsureJITOnce];
+
+    // ★ [JIT-STATUS] 三态显示，判据 = 本次进程的**真实可用性**（绝不拿"权限/接口
+    //   存在"当"已开启"；巨魔 TrollStore 关掉 JIT 时落到"权限已给但不保证可用"）：
+    //     可用(绿) / 权限已给但不保证可用(琥珀) / 不可用(红)
+    NSString *ameJitWhy = nil;
+    AMEJITUsability ameJitU = AMEJITCurrentUsability(&ameJitWhy, NULL);
+    if (ameJitU == AMEJITUsabilityVerified) {
         self.jitStatusLabel.text = localize(@"i18n_str_421", nil);
         self.jitStatusLabel.textColor = [UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:1.0];
         self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.2 green:0.7 blue:0.3 alpha:1.0] colorWithAlphaComponent:0.15];
+    } else if (ameJitU == AMEJITUsabilityPermissionOnly) {
+        // 权限已给但不保证可用（能力声明在、执行式探针未过）⇒ 琥珀，绝不绿。
+        self.jitStatusLabel.text = localize(@"ame_jit_status_perm_only", nil);
+        self.jitStatusLabel.textColor = [UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0];
+        self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.95 green:0.75 blue:0.2 alpha:1.0] colorWithAlphaComponent:0.15];
     } else {
         self.jitStatusLabel.text = localize(@"i18n_str_422", nil);
         self.jitStatusLabel.textColor = [UIColor colorWithRed:0.9 green:0.4 blue:0.3 alpha:1.0];
         self.jitStatusLabel.backgroundColor = [[UIColor colorWithRed:0.9 green:0.4 blue:0.3 alpha:1.0] colorWithAlphaComponent:0.15];
     }
     [self norightPostState];   // ★ [NORIGHT] 把 JIT 文本/颜色同步给主页顶栏 pill
+}
+
+// ★ [JIT-ENV] 环境识别 → (必要时)主动申请 JIT → 复核。仅首启跑一次；
+// 后台执行（巨魔自开会 posix_spawn，绝不能卡主线程），完成后回主线程刷新状态。
+- (void)ameAutoEnsureJITOnce {
+    static BOOL ameDidAutoEnsure = NO;
+    if (ameDidAutoEnsure) return;
+    ameDidAutoEnsure = YES;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        NSString *why = nil;
+        AMEJITEnsureResult r = AMEJITEnsureJITUsable(&why);
+        NSLog(@"[JIT-ENV] auto-ensure at launcher entry: result=%ld %@", (long)r, why ?: @"-");
+        // 状态可能已变 ⇒ 回主线程重算显示（norightPostState 会同步给主页顶栏 pill）。
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self updateJITStatus];
+        });
+    });
 }
 
 #pragma mark - 自定义外观（字体颜色）
@@ -1151,15 +1172,120 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         if (taskId) {
             [PLTaskProgressViewController presentForTaskId:taskId];
         }
-    } else if ([[DownloadTaskManager sharedManager] hasActiveTasks]) {
-        // 下载中仍允许启动游戏（不再硬阻断），仅提示用户有进行中的下载。
-        // 原实现在此处 return 导致"开了下载球后任意下载未完成就永远无法启动游戏"，
-        // 且某些下载任务状态机异常会卡住导致永久无法启动。
-        [self showAlert:localize(@"i18n_str_388", nil) message:localize(@"i18n_str_430", nil)];
-        [self launchGame];
     } else {
-        [self launchGame];
+        // ★ [NO-BLOCK][LAUNCH-AFTER-DL] 根因：旧实现用【全局】hasActiveTasks 判定，
+        //   于是任何后台下载（mod / 光影 / 资源包 / 别的实例 / 整合包）都在点击启动时
+        //   把用户拦住 ⇒ 用户体感「点了启动没反应 / 报缺件」。真修：只把【本次要启动的
+        //   实例自己的下载】视为需要等待；与启动无关的下载一律不拦（写 [NO-BLOCK] 继续）。
+        NSString *selProfile = PLProfiles.current.selectedProfileName;
+        NSString *launchVersionId = selProfile ? PLProfiles.current.profiles[selProfile][@"lastVersionId"] : nil;
+        NSArray<NSNumber *> *activeStates = @[@(DownloadTaskStateDownloading), @(DownloadTaskStatePending)];
+        NSInteger relevant = 0, unrelated = 0;
+        for (DownloadTaskItem *item in [[DownloadTaskManager sharedManager] tasksWithStates:activeStates]) {
+            BOOL isLaunchInstance = [item.resourceType isEqualToString:DownloadTaskResourceTypeMinecraft] &&
+                                    launchVersionId.length > 0 &&
+                                    [item.resourceName isEqualToString:launchVersionId];
+            if (isLaunchInstance) relevant++; else unrelated++;
+        }
+        if (unrelated > 0) {
+            AmeLaunchGateNoteNonBlock([NSString stringWithFormat:@"download_unrelated(count=%ld)", (long)unrelated],
+                                      AmeLaunchGateKindDownload);
+        }
+        if (relevant > 0) {
+            // 只有【本实例自身】的下载仍在进行时才排队（有界；见 presentLaunchGateForRemainingCount:）
+            [self presentLaunchGateForRemainingCount:relevant];
+        } else {
+            [self launchGame];
+        }
     }
+}
+
+// ★ [LAUNCH-AFTER-DL] 本实例自身下载未结束时的启动准入弹窗：
+//   默认排队自动启动；★ [NO-BLOCK] 同时给出「立即启动」出路（非渲染器门禁不得永久阻断启动）。
+//   触发面已收窄：只有【本次要启动的实例自己的下载】才会走到这里（见 launchButtonTapped）。
+- (void)presentLaunchGateForRemainingCount:(NSInteger)remaining {
+    NSString *title = localize(@"i18n_str_9105", nil);
+    NSString *message = [NSString stringWithFormat:localize(@"i18n_str_9106", nil), (long)MAX(remaining, 0)];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                  message:message
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    // 默认动作：排队，下载全部结束后自动启动
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_9107", nil)
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        [self enqueueLaunchAfterDownloadsComplete];
+    }]];
+    // ★ [NO-BLOCK] 即刻出路：不等下载，立刻启动（用户显式选择）。
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_592", nil)
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        self.pendingLaunchAfterDownload = NO;
+        [self removeLaunchAfterDownloadsObserver];
+        AmeLaunchGateNoteNonBlock(@"download_incomplete_user_forced_launch", AmeLaunchGateKindDownload);
+        [self launchGame];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                             style:UIAlertActionStyleCancel
+                                           handler:nil]];
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];
+}
+
+// ★ [LAUNCH-AFTER-DL] 把启动排队到「下载全部结束」之后自动继续；幂等。
+- (void)enqueueLaunchAfterDownloadsComplete {
+    self.pendingLaunchAfterDownload = YES;
+    NSLog(@"[LAUNCH-AFTER-DL] 启动已排队：等待全部下载任务结束（当前 active=%d）",
+          [[DownloadTaskManager sharedManager] hasActiveTasks]);
+    if (self.pendingLaunchDownloadObserverInstalled) return;
+    self.pendingLaunchDownloadObserverInstalled = YES;
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self
+           selector:@selector(launchAfterDownloadsObserverFired:)
+               name:DownloadTaskManagerTaskCompletedNotification
+             object:nil];
+    [nc addObserver:self
+           selector:@selector(launchAfterDownloadsObserverFired:)
+               name:DownloadTaskManagerAggregateStateDidChangeNotification
+             object:nil];
+
+    // ★ [NO-BLOCK] 有界兜底：即便下载长时间不结束，也绝不让「排队」变成永久阻断。
+    //   等待上限 180s，到点即写 [NO-BLOCK] 并照常启动（下载会在后台继续）。
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(180.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s || !s.pendingLaunchAfterDownload) return;
+        s.pendingLaunchAfterDownload = NO;
+        [s removeLaunchAfterDownloadsObserver];
+        AmeLaunchGateNoteNonBlock(@"download_queue_timeout_180s", AmeLaunchGateKindDownload);
+        [s launchGame];
+    });
+}
+
+- (void)launchAfterDownloadsObserverFired:(NSNotification *)note {
+    if (!self.pendingLaunchAfterDownload) return;
+    if ([[DownloadTaskManager sharedManager] hasActiveTasks]) {
+        // 仍有下载/排队：继续等待（日志可辨识）
+        NSLog(@"[LAUNCH-AFTER-DL] 仍在下载/校验，继续等待后自动启动");
+        return;
+    }
+    // 全部结束：解除观察并自动继续启动
+    self.pendingLaunchAfterDownload = NO;
+    [self removeLaunchAfterDownloadsObserver];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[LAUNCH-AFTER-DL] 下载全部结束 ⇒ 自动继续启动");
+        [self launchGame];
+    });
+}
+
+- (void)removeLaunchAfterDownloadsObserver {
+    if (!self.pendingLaunchDownloadObserverInstalled) return;
+    self.pendingLaunchDownloadObserverInstalled = NO;
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:DownloadTaskManagerTaskCompletedNotification
+                                                  object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                    name:DownloadTaskManagerAggregateStateDidChangeNotification
+                                                  object:nil];
 }
 
 - (void)launchGame {
@@ -1171,6 +1297,9 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         // 之前的行为是弹 alert 提示"请先登录账户"然后 return，用户需手动去登录再回来启动，
         // 体验不友好。改为设置 pendingLaunchAfterLogin 标记后发送 ShowAccountManager 通知，
         // 账号添加成功后 UpdateAccountInfo 通知回到此处时自动触发 launchGame 继续启动。
+        // 【分类：暂无法根除】账号是 Java 侧启动参数的前置（native 不注入 username）；这里
+        // 不是死路——登录成功后 updateAccountInfo 会自动继续启动（pendingLaunchAfterLogin）。
+        NSLog(@"[LAUNCH-GATE] gate=account kind=account ⇒ 转账号管理（登录成功后自动继续启动，非死路）");
         self.pendingLaunchAfterLogin = YES;
         [[NSNotificationCenter defaultCenter] postNotificationName:@"ShowAccountManager" object:nil];
         return;
@@ -1181,14 +1310,27 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
     NSString *selectedProfile = PLProfiles.current.selectedProfileName;
     if (!selectedProfile) {
-        [self showAlert:localize(@"i18n_str_431", nil)];
-        return;
+        // ★ [NO-BLOCK] 根因：仅因「未选中实例」就 showAlert+return，把用户挡在门口。
+        //   真修：列表非空时自动选第一个实例继续启动；只有确实【一个实例都没有】才提示
+        //   （那不是门禁，是没有可启动对象）。
+        NSString *fallback = PLProfiles.current.profiles.allKeys.firstObject;
+        if (fallback.length > 0) {
+            PLProfiles.current.selectedProfileName = fallback;
+            selectedProfile = fallback;
+            AmeLaunchGateNoteNonBlock(@"no_profile_selected_autoselect", AmeLaunchGateKindInstance);
+        } else {
+            AmeLaunchGateNoteNonBlock(@"no_profile_at_all", AmeLaunchGateKindInstance);
+            [self showAlert:localize(@"i18n_str_431", nil)];
+            return;
+        }
     }
 
     NSString *versionId = PLProfiles.current.profiles[selectedProfile][@"lastVersionId"];
     if (!versionId) {
-        [self showAlert:localize(@"i18n_str_43", nil)];
-        return;
+        // ★ [NO-BLOCK] 部分 profile（旧直装器写入 / 手改）没有 lastVersionId 键。
+        //   真修：以实例名兜底（本工程惯例：profile 名 == 版本 id），绝不因缺一个键拦住启动。
+        versionId = selectedProfile;
+        AmeLaunchGateNoteNonBlock(@"missing_lastVersionId_fallback_to_name", AmeLaunchGateKindInstance);
     }
 
     // FCL 风格：记录最后游玩时间戳到 profile，供版本管理页显示
@@ -1221,11 +1363,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         if (version) {
             [self startDownloadWithVersion:version profileName:selectedProfile];
         } else {
-            // 如果在远程列表中找不到，可能是本地版本
+            // ★ [NO-BLOCK][LAUNCH-AFTER-DL] 根因：旧实现在远程版本清单里查不到就弹窗 + return
+            //   —— 但「本地/自定义实例（直装器写入的 profile）」本就不在远程清单里，于是被
+            //   误判成「版本不存在」而拦住启动。真修：与 LauncherNavigationController 同款
+            //   回退 —— 用 profile 的 lastVersionId 合成一个 custom 版本对象继续启动
+            //   （后续 downloadVersion:/[PREDL] 会以本地版本 JSON 为准补齐/校验）。
+            AmeLaunchGateNoteNonBlock([NSString stringWithFormat:@"version_not_in_remote(%@)", versionId ?: @"?"],
+                                      AmeLaunchGateKindInstance);
+            NSDictionary *customVersion = @{ @"id": versionId ?: @"",
+                                             @"type": @"custom" };
             dispatch_async(dispatch_get_main_queue(), ^{
-                AmeGameLandscapeLockExit();   // ★ [GAME-LANDSCAPE] 启动失败 ⇒ 立刻恢复启动器方向
-                [self setInteractionEnabled:YES];
-                [self showAlert:localize(@"i18n_str_432", nil)];
+                [self startDownloadWithVersion:customVersion profileName:selectedProfile];
             });
         }
     };
@@ -1235,6 +1383,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
 - (void)startDownloadWithVersion:(NSDictionary *)versionObject profileName:(NSString *)profileName {
     self.task = [MinecraftResourceDownloadTask new];
+
+    // ★ [PREDL] 启动前【可见】的检查/补齐步骤（保留，不静默）：
+    //   点「启动」后先对实例做完整性校验（本地 SHA1；仅缺失/损坏才联网补齐）。
+    //   正常安装装全后，这里应 0 下载；若缺件，日志里会逐条出现
+    //   “[MCDL][PREDL] 现补 …（本地缺失或校验失败）”，可据此定位安装漏项。
+    NSLog(@"[MCDL][PREDL] 启动前完整性校验开始：实例 '%@'（本地校验；仅缺失/损坏才联网补齐）",
+          versionObject[@"id"] ?: profileName ?: @"?");
 
     __weak LauncherRightPanelViewController *weakSelf = self;
 
@@ -1287,7 +1442,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     } else {
         self.progressView.hidden = !showProgressUI;
         self.progressLabel.hidden = !showProgressUI;
-        self.progressLabel.text = showProgressUI ? localize(@"i18n_str_2052", nil) : @"";
+        self.progressLabel.text = showProgressUI ? localize(@"i18n_str_9110", nil) : @"";   // ★ [PREDL] 启动前检查/补齐（可见）
     }
 
     UIApplication.sharedApplication.idleTimerDisabled = !enabled;
@@ -1405,9 +1560,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
                 }
             }
             
-            [self invokeAfterJITEnabled:^{
-                UIKit_launchMinecraftSurfaceVC(self.view.window, self.task.metadata);
-            }];
+            // ★ [LAUNCH-AFTER-DL] 启动准入硬门禁：即使 downloadVersion: 已回调“完成”，
+            //   仍以【本地文件】为准再核一遍必需件（版本 JSON / 库(含 client.jar 伪库) / assetIndex）。
+            //   缺件则【不启动】，给明确提示并按有界重试延迟等待（下载/校验仍在进行）。
+            //   这样即便 progress 的“完成”信号受竞态误判，也绝不会带着缺件进 JLI_Launch。
+            self.launchAdmissionRetryCount = 0;
+            [self scheduleLaunchAfterLocalAdmissionCheckWithMetadata:self.task.metadata];
         } else {
             self.task = nil;
             AmeGameLandscapeLockExit();   // ★ [GAME-LANDSCAPE] 拿不到 metadata = 启动没成 ⇒ 恢复启动器方向
@@ -1416,6 +1574,138 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
         }
     });
+}
+
+// ★ [LAUNCH-AFTER-DL] 启动准入：本地核对必需文件（不联网），齐备才放行进 JLI_Launch。
+//   缺件时不启动，给明确提示并按有界重试延迟等待（最多 600 × 0.5s = 300s），
+//   超时则放弃本次启动并提示（绝不带着缺件启动），用户可在下载结束后重试。
+- (void)scheduleLaunchAfterLocalAdmissionCheckWithMetadata:(NSDictionary *)metadata {
+    NSArray<NSString *> *missing = [self missingRequiredLaunchFilesForMetadata:metadata];
+    if (missing.count == 0) {
+        if (self.launchAdmissionRetryCount > 0) {
+            NSLog(@"[LAUNCH-AFTER-DL] 本地核对通过（等待重试 %ld 次后）⇒ 放行启动",
+                  (long)self.launchAdmissionRetryCount);
+        } else {
+            NSLog(@"[LAUNCH-AFTER-DL] 本地核对通过 ⇒ 放行启动");
+        }
+        self.launchAdmissionRetryCount = 0;
+        [self invokeAfterJITEnabled:^{
+            UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
+        }];
+        return;
+    }
+
+    self.launchAdmissionRetryCount += 1;
+    NSInteger retry = self.launchAdmissionRetryCount;
+    NSLog(@"[LAUNCH-AFTER-DL] 启动准入未通过：仍缺 %lu 项（第 %ld 次等待重试）；样例：%@",
+          (unsigned long)missing.count, (long)retry,
+          [[missing subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)5, missing.count))] componentsJoinedByString:@", "]);
+
+    if (retry == 1) {
+        [self showAlert:localize(@"i18n_str_9105", nil)
+                message:[NSString stringWithFormat:localize(@"i18n_str_9108", nil), (long)missing.count]];
+    }
+    if (retry > 600) {
+        NSLog(@"[LAUNCH-AFTER-DL] 启动准入等待超时（仍缺 %lu 项）⇒ 放弃本次启动（不带着缺件启动）",
+              (unsigned long)missing.count);
+        self.launchAdmissionRetryCount = 0;
+        self.task = nil;
+        AmeGameLandscapeLockExit();   // ★ [GAME-LANDSCAPE] 放弃启动 ⇒ 恢复启动器方向
+        [self setInteractionEnabled:YES];
+        [self showAlert:localize(@"i18n_str_9105", nil)
+                message:[NSString stringWithFormat:localize(@"i18n_str_9109", nil), (long)missing.count]];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        NSDictionary *md = s.task.metadata ?: metadata;
+        [s scheduleLaunchAfterLocalAdmissionCheckWithMetadata:md];
+    });
+}
+
+/// ★ [LAUNCH-AFTER-DL] 本地核对启动必需文件（不联网）：
+///   ① 版本 JSON 自身；② 每个非 skip 库（含 tweakVersionJson 追加的 client.jar 伪库
+///   path=../versions/<id>/<id>.jar）；③ assetIndex JSON。返回缺失清单（空 = 齐备）。
+- (NSArray<NSString *> *)missingRequiredLaunchFilesForMetadata:(NSDictionary *)metadata {
+    NSMutableArray<NSString *> *missing = [NSMutableArray array];
+    if (![metadata isKindOfClass:[NSDictionary class]]) return missing;
+
+    const char *env = getenv("POJAV_GAME_DIR");
+    if (env == NULL || strlen(env) == 0) return missing;
+    NSString *gameDir = [NSString stringWithUTF8String:env];
+    NSFileManager *fm = NSFileManager.defaultManager;
+
+    // ① 版本 JSON：metadata["id"] 对应的 versions/<id>/<id>.json
+    NSString *vid = [metadata[@"id"] isKindOfClass:[NSString class]] ? metadata[@"id"] : nil;
+    if (vid.length > 0) {
+        NSString *vpath = [gameDir stringByAppendingPathComponent:
+                           [NSString stringWithFormat:@"versions/%@/%@.json", vid, vid]];
+        if (![fm fileExistsAtPath:vpath]) {
+            [missing addObject:[NSString stringWithFormat:@"versions/%@/%@.json", vid, vid]];
+        }
+    }
+
+    // ② 库（含 client.jar 伪库）
+    NSArray *libs = [metadata[@"libraries"] isKindOfClass:[NSArray class]] ? metadata[@"libraries"] : @[];
+    for (NSDictionary *lib in libs) {
+        if (![lib isKindOfClass:[NSDictionary class]]) continue;
+        if ([lib[@"skip"] boolValue]) continue;   // lwjgl/natives 等已在启动器侧替换/跳过
+        NSString *p = lib[@"downloads"][@"artifact"][@"path"];
+        if (![p isKindOfClass:[NSString class]] || p.length == 0) continue;
+        NSString *abs = [p hasPrefix:@"../"]
+            ? [[gameDir stringByAppendingPathComponent:p] stringByStandardizingPath]
+            : [gameDir stringByAppendingPathComponent:[@"libraries" stringByAppendingPathComponent:p]];
+        unsigned long long size = 0;
+        if ([fm fileExistsAtPath:abs]) {
+            size = [[fm attributesOfItemAtPath:abs error:nil] fileSize];
+        }
+        if (size == 0) {
+            [missing addObject:[p lastPathComponent] ?: p];
+        }
+    }
+
+    // ③ assetIndex JSON
+    NSDictionary *ai = [metadata[@"assetIndex"] isKindOfClass:[NSDictionary class]] ? metadata[@"assetIndex"] : nil;
+    NSString *assetIndexPath = nil;
+    if (ai[@"id"]) {
+        assetIndexPath = [gameDir stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
+        if (![fm fileExistsAtPath:assetIndexPath]) {
+            [missing addObject:[NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
+        }
+    }
+
+    // ④ 资源对象抽样（前 100 个）：捕获“assets 完全/大面积没落”的安装中断，
+    //    同时避免每次重试都全量 stat 上千文件（性能与门禁严格度折中）。
+    if (assetIndexPath && [fm fileExistsAtPath:assetIndexPath]) {
+        NSMutableDictionary *indexObj = parseJSONFromFile(assetIndexPath);
+        NSDictionary *objects = [indexObj[@"objects"] isKindOfClass:[NSDictionary class]] ? indexObj[@"objects"] : nil;
+        BOOL mapToResources = [indexObj[@"map_to_resources"] boolValue];
+        if (objects.count > 0) {
+            NSUInteger checked = 0, missingAssets = 0;
+            for (NSString *name in objects) {
+                if (checked >= 100) break;
+                checked++;
+                NSDictionary *o = objects[name];
+                NSString *hash = [o isKindOfClass:[NSDictionary class]] ? o[@"hash"] : nil;
+                if (![hash isKindOfClass:[NSString class]] || hash.length < 2) continue;
+                NSString *op = mapToResources
+                    ? [gameDir stringByAppendingPathComponent:[@"resources" stringByAppendingPathComponent:name]]
+                    : [gameDir stringByAppendingPathComponent:
+                       [NSString stringWithFormat:@"assets/objects/%@/%@", [hash substringToIndex:2], hash]];
+                if (![fm fileExistsAtPath:op]) missingAssets++;
+            }
+            if (missingAssets > 0) {
+                [missing addObject:[NSString stringWithFormat:@"assets(抽样 %lu/%lu)",
+                                    (unsigned long)missingAssets, (unsigned long)checked]];
+            }
+        }
+    }
+
+    return [missing copy];
 }
 
 - (void)invokeAfterJITEnabled:(void(^)(void))handler {
@@ -1471,15 +1761,20 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             [self jit_reattachJIT26ThenLaunch:handler];
             return;
         }
-        // ★ [JIT-FLOW] 三态可见化：isJITEnabled=1 但探针全灭 ⇒ CS_DEBUGGED 粘滞。
-        if (!JIT26IsLikelyDebuggerKeepAttached()) {
-            NSLog(@"[JIT-FLOW] [RightPanel] WARNING: isJITEnabled=1 but no live JIT26 debugger (ppid=%d traced=%d exn=%d); launch may hit brk #0x69",
-                  getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
+        // ★ [JIT-STATUS] 直启门禁：只有"真能力已验证"才允许直启。声明/接口存在
+        //   （含巨魔 TrollStore 装机能力、粘滞 CS_DEBUGGED）但本次不可用时，绝不
+        //   一条路走到 JVM 首帧 JIT 取指 SIGBUS —— 改成走下方"申请/等待"链路。
+        NSString *ameJitGate = AMEJITLaunchGateReason();
+        if (ameJitGate == nil) {
+            NSLog(@"[JIT] [RightPanel] JIT verified usable, launching directly");
+            handler();
+            return;
         }
-        NSLog(@"[JIT] [RightPanel] JIT enabled with live JIT26 debugger, launching directly");
-        handler();
-        return;
-    } else if (hasTrollStoreJIT) {
+        NSLog(@"[JIT-STATUS] [RightPanel] NOT launching directly (%@) -- routing to request/wait path",
+              ameJitGate);
+        // 刻意不 return：落到下面的 apple-magnifier:// / 使能器 / stikjit:// 链路去申请。
+    }
+    if (hasTrollStoreJIT) {
         // ★ [JIT-FLOW] 原为 completionHandler:nil：apple-magnifier:// 无人处理
         //   （未装 TrollStore/StikDebug，或 TrollStore 未启用 URL Scheme）时
         //   iOS 静默失败，UI 却照样弹「正在等待」⇒ 用户白等一整个超时窗口。

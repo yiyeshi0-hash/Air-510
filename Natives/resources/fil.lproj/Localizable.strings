@@ -186,3 +186,5 @@
 "preference.title.debug_show_layout_overlap" = "Ipakita ang layout na magkakapatong";
 "preference.detail.debug_show_layout_overlap" = "I-overlay ang bawat view gamit ang isang transparent na kulay upang ipakita ang mga magkakapatong na view.";
 "controller_configurator.playstation.title.named_back" = "Iselekta";
+/* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
+"ame_jit_status_perm_only" = "JIT: Granted (unverified)";

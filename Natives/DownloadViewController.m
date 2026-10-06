@@ -2044,8 +2044,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.modTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.modList.count > 0);
                 if (strongSelf.modList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_180", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_180", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2125,8 +2126,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.shaderTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.shaderList.count > 0);
                 if (strongSelf.shaderList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_181", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_181", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2196,8 +2198,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.modpackTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.modpackList.count > 0);
                 if (strongSelf.modpackList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_182", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_182", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2267,8 +2270,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.resourcepackTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.resourcepackList.count > 0);
                 if (strongSelf.resourcepackList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_183", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_183", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2338,8 +2342,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.datapackTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.datapackList.count > 0);
                 if (strongSelf.datapackList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_184", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_184", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2422,8 +2427,9 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
                 [strongSelf.worldTableView reloadData];
                 strongSelf.emptyLabel.hidden = (strongSelf.worldList.count > 0);
                 if (strongSelf.worldList.count == 0) {
-                    // ★ [MODSRC-GAMEVER] 有激活筛选时显示「筛选无结果」，否则「暂无」
-                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? @"resman.download.filter_empty" : @"i18n_str_186", nil);
+                    // ★ [MODSRC-GAMEVER] ★ [DLFILTER-26] 有激活筛选时显示「筛选无结果」
+                    //   （选中 26.x 时由 activeFilterEmptyMessageKey 给出更明确的说明），否则「暂无」
+                    strongSelf.emptyLabel.text = localize([strongSelf hasActiveListFilter] ? [strongSelf activeFilterEmptyMessageKey] : @"i18n_str_186", nil);
                     strongSelf.emptyLabel.hidden = NO;
                 }
             } else if (error) {
@@ -2526,14 +2532,71 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     [self presentViewController:alert animated:YES completion:nil];
 }
 
+// ★ [DLFILTER-26] 版本号「新→旧」比较：按 "." 分段做数值比较，避免字符串排序把
+//   "1.21.11" 排到 "26.2" 之前之类的错误（"26" 数值 26 > "1" 数值 1）。
+//   全工程唯一实现，供 showGameVersionPicker 的选项列表排序使用。
+static NSComparisonResult PLMCVersionDescendingCompare(NSString *a, NSString *b) {
+    NSArray<NSString *> *pa = [a componentsSeparatedByString:@"."];
+    NSArray<NSString *> *pb = [b componentsSeparatedByString:@"."];
+    NSUInteger n = MAX(pa.count, pb.count);
+    for (NSUInteger i = 0; i < n; i++) {
+        NSInteger va = (i < pa.count) ? pa[i].integerValue : 0;
+        NSInteger vb = (i < pb.count) ? pb[i].integerValue : 0;
+        if (va != vb) return (va > vb) ? NSOrderedAscending : NSOrderedDescending;
+    }
+    return [a compare:b];
+}
+
 - (void)showGameVersionPicker {
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_188", nil)
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    // 动态构建版本列表：优先使用已加载的 Mojang version_manifest 中的 release 版本，
-    // 这样能自动跟随 MC 版本更新（不再使用硬编码列表）。
-    // 同时把当前 profile 的 MC 版本置顶（如果有）方便快速选择。
+    // ★ [DLFILTER-26] 六类资源（模组 / 资源包 / 世界 / 光影 / 数据包 / 整合包）共用的
+    //   「游戏版本筛选」选项列表【唯一构造点】。此处修复用户报的 bug：
+    //   旧实现里有一道静态门槛
+    //       if ([versionId hasPrefix:@"1."] == NO) continue;
+    //   把 26.x（26.2 / 26.3 等新版本号体系）整段过滤掉 ⇒ 选项最高只到 1.21.11
+    //   ⇒ 用户根本选不到 26.x，于是"筛不出 / 下不了高版本资源"。
+    //   现改为：上游 = 启动器已加载的版本清单（Mojang / BMCLAPI version_manifest，新→旧），
+    //   与「项目支持矩阵版本 26.3 / 26.2」做并集 → 去重 → 按版本号数值降序排序后填充。
+    //   注意：这不是写死的列表，也不是本地过期缓存 —— 上游就是下拉选项里原本那份 manifest，
+    //   真正的上限来自上面那道 "1." 前缀门槛（已删除）。
+
+    // 上游①：version_manifest 中的 release 版本（排除 snapshot / pre / rc；清单本身已新→旧）
+    NSMutableArray<NSString *> *manifestReleases = [NSMutableArray array];
+    if (self.versionList && [self.versionList isKindOfClass:[NSArray class]]) {
+        for (NSDictionary *version in self.versionList) {
+            if (![version isKindOfClass:[NSDictionary class]]) continue;
+            NSString *type = version[@"type"];
+            if (![type isEqualToString:@"release"]) continue;
+            NSString *versionId = version[@"id"];
+            if (![versionId isKindOfClass:[NSString class]] || versionId.length == 0) continue;
+            if ([manifestReleases containsObject:versionId]) continue;
+            [manifestReleases addObject:versionId];
+        }
+    }
+
+    // 上游②：项目支持矩阵版本（26.3 / 26.2）—— 必须常驻选项，即使 manifest 拉取失败/过期。
+    //   本项目支持矩阵仅 26.2 / 26.3，不额外引入 26.1 / 26.4。
+    NSArray<NSString *> *supportMatrixVersions = @[@"26.3", @"26.2"];
+
+    NSMutableArray<NSString *> *merged = [NSMutableArray arrayWithArray:manifestReleases];
+    for (NSString *v in supportMatrixVersions) {
+        if (![merged containsObject:v]) [merged addObject:v];
+    }
+
+    // manifest 完全不可用（离线 / 接口异常）时补一批经典版本，保证 picker 至少可用
+    if (manifestReleases.count == 0) {
+        [merged addObjectsFromArray:@[@"1.21.11", @"1.21.1", @"1.20.1", @"1.19.2", @"1.18.2", @"1.16.5"]];
+    }
+
+    // 按版本号数值降序排序（新→旧）：26.3 > 26.2 > … > 1.21.11 > … > 1.16.5
+    [merged sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return PLMCVersionDescendingCompare(a, b);
+    }];
+
+    // 组装最终选项：首项「全部版本」；当前 profile 的 MC 版本紧随其后（便于快速选择）。
     NSMutableArray<NSString *> *versions = [NSMutableArray arrayWithObject:localize(@"i18n_str_2032", nil)];
 
     // 当前 profile 的 MC 版本（若有）放第二位，便于快速选择
@@ -2541,28 +2604,12 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     if (profileMcVersion.length > 0 && ![versions containsObject:profileMcVersion]) {
         [versions addObject:profileMcVersion];
     }
-
-    // 从 Mojang version_manifest 提取 release 版本
-    if (self.versionList && [self.versionList isKindOfClass:[NSArray class]]) {
-        for (NSDictionary *version in self.versionList) {
-            NSString *type = version[@"type"];
-            if (![type isEqualToString:@"release"]) continue;
-            NSString *versionId = version[@"id"];
-            if (![versionId isKindOfClass:[NSString class]] || versionId.length == 0) continue;
-            // 跳过过于旧的版本（1.8 之前的版本 mod 支持极少）
-            if ([versionId hasPrefix:@"1."] == NO) continue;
-            // 跳过已经在列表中的（避免 profileMcVersion 重复）
-            if ([versions containsObject:versionId]) continue;
-            [versions addObject:versionId];
-        }
+    for (NSString *v in merged) {
+        if ([versions containsObject:v]) continue;
+        [versions addObject:v];
     }
 
-    // 若 versionList 还未加载或为空，使用基础 fallback（保证 picker 至少能弹出）
-    if (versions.count <= 1) {
-        [versions addObjectsFromArray:@[@"1.21", @"1.20.1", @"1.19.2", @"1.18.2", @"1.16.5"]];
-    }
-
-    // 限制列表长度避免 alert 过长（保留最近 30 个版本 + 全部 + profile 版本）
+    // 限制列表长度避免 alert 过长（保留最新 32 项；排序后 26.x 位于最前，不会被截掉）
     if (versions.count > 32) {
         NSArray *tail = [versions subarrayWithRange:NSMakeRange(0, 32)];
         versions = [NSMutableArray arrayWithArray:tail];
@@ -2730,6 +2777,22 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     self.searchBar.text = nil;
     [self updateSidebarFilterValues];
     [self reloadCurrentList];
+}
+
+// ★ [DLFILTER-26] 当前选中的是否为新版本号体系（26.x）版本。
+//   26.2 / 26.3 是本项目支持矩阵版本；26.1.x 等亦属 26.x 体系。
+- (BOOL)isSelectedModern26xVersion {
+    NSString *v = self.currentGameVersion;
+    return (v.length > 0 && [v hasPrefix:@"26."]);
+}
+
+// ★ [DLFILTER-26] 有激活筛选且结果为空时的文案键。
+//   选中 26.x 而当前资源源确实没有对应资源时，给出更明确的说明，而不是笼统的
+//   「筛选无结果」——避免用户误以为是自己用法有误，也避免呈现成静默空列表。
+//   六类资源（模组/资源包/世界/光影/数据包/整合包）空列表分支统一改用本方法。
+- (NSString *)activeFilterEmptyMessageKey {
+    return [self isSelectedModern26xVersion] ? @"resman.download.filter_empty_26x"
+                                             : @"resman.download.filter_empty";
 }
 
 // ★ [MODSRC-GAMEVER] 当前是否处于「有激活筛选」状态：版本 / 加载器 / 搜索词任一非空。
@@ -3179,8 +3242,10 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
 /// 否则：1) 确保 version JSON 存在；2) 用 MinecraftResourceDownloadTask 下载完整原版文件（库+资源）；
 /// 3) 进度展示由 MinecraftResourceDownloadTask 内部的阶段上报驱动统一进度页自动弹出
 ///    （redesign-download-ui Phase 3 Task 3.1：downloadVersion: 内注册 6 阶段 + autoPresentDetail）。
-/// 注：client.jar 由 Java 端启动时按需下载，此处不检查；MinecraftResourceDownloadTask
-/// 下载时会对已存在且 SHA1 正确的文件跳过，因此重复调用安全。
+/// 注：★ [PREDL] client.jar 已由 tweakVersionJson 追加为【伪库条目】
+///   （path=../versions/<id>/<id>.jar），随「下载库文件」阶段真实下载，
+///   故 downloadVersion: 会一并把它补齐——原注释「由 Java 端启动时按需下载，此处不检查」已过时。
+///   MinecraftResourceDownloadTask 下载时会对已存在且 SHA1 正确的文件跳过，因此重复调用安全。
 - (void)ensureVanillaInstalled:(NSDictionary *)version completion:(void (^)(BOOL success))completion {
     if (![version isKindOfClass:[NSDictionary class]]) {
         if (completion) completion(NO);
@@ -3544,33 +3609,61 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
             PLProfiles.current.selectedProfileName = versionId;
             [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageWriteJSON status:PLTaskStageStatusCompleted];
 
-            // 仅 Fabric 安装 Fabric API；Quilt 用 QSL/QFAPI，不安装（阶段1 Skipped）
-            if (installAPI && !isQuilt) {
-                [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusRunning];
-                [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs progress:-1 message:localize(@"i18n_str_209", nil)];
-                [manager updateTaskWithId:fabricTaskId currentStageIndex:kFabricStageLoaderLibs];
-                [strongSelf downloadFabricAPI:gameVersion completion:^(BOOL success, NSError *apiError) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        __strong typeof(weakSelf) strongSelf2 = weakSelf;
-                        if (!strongSelf2) return;
-                        if (success) {
-                            [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusCompleted];
+            // ★ [FABRIC-COMPLETE] 关键补齐（用户“点了启动才开始下载”的根因之一）：
+            //   此前这里只写 profile JSON + 可选 Fabric API，**从未下载加载器库**
+            //   （fabric-loader / sponge-mixin / intermediary / asm* 等 —— 正是 meta profile 里
+            //   没有 downloads 块、启动期才被现补的那批）。阶段名「下载加载器库」被误用于下 mod。
+            //   现在把该阶段真正接到启动期同款的资源补齐上：安装即装全 ⇒ 首次启动（含离线）不再现补。
+            [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusRunning];
+            [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs progress:-1
+                              message:localize(@"i18n_str_1247", nil)];
+            [manager updateTaskWithId:fabricTaskId currentStageIndex:kFabricStageLoaderLibs];
+
+            MinecraftResourceDownloadTask *prefill = [MinecraftResourceDownloadTask new];
+            prefill.maxRetryCount = 3;
+            prefill.handleError = ^{};
+            [prefill prefillVersionResources:profileJson completion:^(BOOL prefillOK, NSError *prefillError) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) strongSelf3 = weakSelf;
+                    if (!strongSelf3) return;
+                    if (prefillOK) {
+                        [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusCompleted];
+                    } else {
+                        [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusFailed];
+                        [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs progress:0
+                                          message:prefillError.localizedDescription];
+                    }
+                    // Fabric API 是 mod（非启动必需）：补下但失败不阻塞加载器安装
+                    void (^finishUp)(BOOL, NSError *) = ^(BOOL apiOK, NSError *apiError) {
+                        dispatch_async(dispatch_get_main_queue(), ^{
+                            __strong typeof(weakSelf) strongSelf4 = weakSelf;
+                            if (!strongSelf4) return;
                             [[DownloadTaskManager sharedManager] setTaskWithId:fabricTaskId completedWithError:nil];
-                            [strongSelf2 finishInstallerProgressWithSuccess:[NSString stringWithFormat:localize(@"i18n_str_210", nil), displayName, loaderVersion]];
-                        } else {
-                            [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusFailed];
-                            [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs progress:0 message:apiError.localizedDescription];
-                            NSError *err = [NSError errorWithDomain:@"FabricInstall" code:5 userInfo:@{NSLocalizedDescriptionKey: apiError.localizedDescription ?: localize(@"i18n_str_211", nil)}];
-                            [[DownloadTaskManager sharedManager] setTaskWithId:fabricTaskId completedWithError:err];
-                            [strongSelf2 finishInstallerProgressWithSuccess:[NSString stringWithFormat:localize(@"i18n_str_212", nil), displayName, loaderVersion, apiError.localizedDescription ?: localize(@"i18n_str_97", nil)]];
-                        }
-                    });
-                }];
-            } else {
-                [manager updateTaskWithId:fabricTaskId stageAtIndex:kFabricStageLoaderLibs status:PLTaskStageStatusSkipped];
-                [[DownloadTaskManager sharedManager] setTaskWithId:fabricTaskId completedWithError:nil];
-                [strongSelf finishInstallerProgressWithSuccess:[NSString stringWithFormat:localize(@"i18n_str_213", nil), displayName, loaderVersion]];
-            }
+                            NSString *msg;
+                            if (!prefillOK) {
+                                // ★ [FABRIC-COMPLETE] 不静默：明确告知“还差 X，将在首次启动补齐”
+                                msg = [NSString stringWithFormat:localize(@"i18n_str_9104", nil),
+                                       displayName, loaderVersion, gameVersion,
+                                       prefillError.localizedDescription ?: @""];
+                            } else if (installAPI && !isQuilt) {
+                                msg = apiOK ? [NSString stringWithFormat:localize(@"i18n_str_210", nil), displayName, loaderVersion]
+                                            : [NSString stringWithFormat:localize(@"i18n_str_212", nil), displayName, loaderVersion,
+                                               apiError.localizedDescription ?: localize(@"i18n_str_97", nil)];
+                            } else {
+                                msg = [NSString stringWithFormat:localize(@"i18n_str_213", nil), displayName, loaderVersion];
+                            }
+                            [strongSelf4 finishInstallerProgressWithSuccess:msg];
+                        });
+                    };
+                    if (installAPI && !isQuilt) {
+                        [strongSelf3 downloadFabricAPI:gameVersion completion:^(BOOL apiOK, NSError *apiError) {
+                            finishUp(apiOK, apiError);
+                        }];
+                    } else {
+                        finishUp(NO, nil);
+                    }
+                });
+            }];
         });
     }];
     DownloadTaskItem *fabricTaskItem = [[DownloadTaskManager sharedManager] taskWithId:fabricTaskId];
@@ -3850,15 +3943,20 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
             [self jit_reattachJIT26ThenLaunch:handler];
             return;
         }
-        // ★ [JIT-FLOW] 三态可见化：isJITEnabled=1 但探针全灭 ⇒ CS_DEBUGGED 粘滞。
-        if (!JIT26IsLikelyDebuggerKeepAttached()) {
-            NSLog(@"[JIT-FLOW] [DownloadVC] WARNING: isJITEnabled=1 but no live JIT26 debugger (ppid=%d traced=%d exn=%d); launch may hit brk #0x69",
-                  getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
+        // ★ [JIT-STATUS] 直启门禁：只有"真能力已验证"才允许直启。声明/接口存在
+        //   （含巨魔 TrollStore 装机能力、粘滞 CS_DEBUGGED）但本次不可用时，绝不
+        //   一条路走到 JVM 首帧 JIT 取指 SIGBUS —— 改成走下方"申请/等待"链路。
+        NSString *ameJitGate = AMEJITLaunchGateReason();
+        if (ameJitGate == nil) {
+            NSLog(@"[JIT] [DownloadVC] JIT verified usable, launching directly");
+            handler();
+            return;
         }
-        NSLog(@"[JIT] [DownloadVC] JIT enabled with live JIT26 debugger, launching directly");
-        handler();
-        return;
-    } else if (hasTrollStoreJIT) {
+        NSLog(@"[JIT-STATUS] [DownloadVC] NOT launching directly (%@) -- routing to request/wait path",
+              ameJitGate);
+        // 刻意不 return：落到下面的 apple-magnifier:// / 使能器 / stikjit:// 链路去申请。
+    }
+    if (hasTrollStoreJIT) {
         // ★ [JIT-FLOW] 原为 completionHandler:nil：apple-magnifier:// 无人处理时
         //   iOS 静默失败。现在拿 urlOK + 明确提示。
         NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];

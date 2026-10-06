@@ -20,8 +20,7 @@
 #include "ctxbridges/bridge_tbl.h"
 #include "ctxbridges/osmesa_internal.h"
 #include "utils.h"
-// ★ [RENDERER-GAP] 新增渲染器引导（VGPU/GL4ESZL2/VirGL）——纯追加。
-// ★ [DROP-NGG4ES] 原队列中的 NG-GL4ES 已整支移除。
+// ★ [RENDERER-GAP] 新增渲染器引导（VGPU/GL4ESZL2/NG-GL4ES/VirGL）——纯追加。
 #include "ctxbridges/gl4es_family_boot.h"
 
 // 默认 GL 路径，pojavInit() 会重新设置
@@ -287,11 +286,10 @@ static int pojavInitOpenGLInternal(BOOL setLwjglProperty) {
               getenv("SFPEW_EGL") ?: "<unset>");
         set_gl_bridge_tbl();
     } else if (isGL4ESFamilyRenderer(renderer.UTF8String)) {
-        // ★ [RENDERER-GAP] VGPU / GL4ESZL2：gl4es 家族。导出全套桌面 GL API，
-        // 运行时经 ANGLE 框架解析 EGL/GLES 后端 —— 与既有 holy gl4es 完全同链路。
-        // 初始化时机（LZ2 的 initialize_gl4es）在 pojavMakeCurrent 尾部由
-        // ame_gap_gl4es_family_boot() 处理；VGPU 自带惰性装载器。
-        // ★ [DROP-NGG4ES] 原 gl4es 家族第三支 NG-GL4ES 已整支移除。
+        // ★ [RENDERER-GAP] VGPU / GL4ESZL2 / NG-GL4ES：gl4es 家族。导出全套桌面
+        // GL API，运行时经 ANGLE 框架解析 EGL/GLES 后端 —— 与既有 holy gl4es 同链路。
+        // 初始化时机（GL4ESZL2 / NG-GL4ES 的 initialize_gl4es）在 pojavMakeCurrent
+        // 尾部由 ame_gap_gl4es_family_boot() 处理；VGPU 自带惰性装载器。
         NSLog(@"[egl_bridge] [RENDERER-GAP] gl4es-family renderer: %@ (ANGLE host EGL)", renderer);
         set_gl_bridge_tbl();
     } else if (isVirglRenderer(renderer.UTF8String)) {
@@ -968,11 +966,10 @@ void pojavMakeCurrent(basic_render_window_t* window) {
     }
     NSLog(@"[egl_bridge] pojavMakeCurrent: window=%p", window);
     br_make_current(window);
-    // ★ [RENDERER-GAP] 新增 gl4es 家族（GL4ESZL2）需在【真实游戏上下文
+    // ★ [RENDERER-GAP] 新增 gl4es 家族（GL4ESZL2 / NG-GL4ES）需在【真实游戏上下文
     // 已 current】之后显式调用 initialize_gl4es（其 vendored 构建带 NO_INIT_CONSTRUCTOR，
     // 构造器不跑；若在上下文之前初始化，硬件探测的 glGetString 会命中系统 stub → 崩溃）。
     // 非 gap 渲染器时内部一次 getenv 比较即返回，对现有渲染器零影响。
-    // ★ [DROP-NGG4ES] 原队列中的 NG-GL4ES 已整支移除。
     ame_gap_gl4es_family_boot();
 }
 

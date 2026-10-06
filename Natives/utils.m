@@ -18,6 +18,18 @@
 #include <sys/stat.h>                 // ★ [JIT-EXEC-2] 同上（fchmod/stat）
 #include <sys/sysctl.h>
 #include <libkern/OSCacheControl.h>   // ★ [JIT-CACHE] sys_icache_invalidate（执行式 JIT 探针）
+#include <spawn.h>                    // ★ [JIT-ENV] 巨魔自开 JIT（posix_spawn）
+#include <sys/wait.h>                 // ★ [JIT-ENV] 同上（waitpid/wait）
+// ★ [JIT-ENV] iOS SDK 不暴露 <sys/ptrace.h>（main.m 亦自带声明）⇒ 照 main.m 的做法
+//   自带 PT_* 常量与 ptrace 原型，供"子进程 PT_TRACE_ME + 父进程 PT_DETACH"自开 JIT 用。
+#ifndef PT_TRACE_ME
+#define PT_TRACE_ME 0
+#endif
+#ifndef PT_DETACH
+#define PT_DETACH 11
+#endif
+extern int ptrace(int, pid_t, caddr_t, int);
+extern char **environ;   // ★ [JIT-ENV] posix_spawnp 的 envp（部分 SDK 下未随 unistd.h 暴露）
 
 #include "utils.h"
 
@@ -1468,23 +1480,344 @@ BOOL AMEJITVerifyWritableJITRegion(void) {
 }
 
 // 等待就绪谓词（供 UI 闸门/headless 的等待循环使用）：
-//   · 非 Universal 脚本路径（legacy / 非 iOS26+FROCE_MIRRORED）：保持原判据，不做
-//     额外 brk（避免消耗 legacy 脚本的唯一断点）。
-//   · Universal 路径：先要调试器在岗（便宜，挡掉连 attach 都没有的情形），再用
+//   · 非镜像路径：JVM 直接执行自产代码 ⇒ **唯一**可信判据是「执行式探针真的跑过」
+//     （两型 mapping：匿名私有 + 文件背衬 COW）。★ [JIT-STATUS] 不再用裸
+//     isJITEnabled(false) —— CS_DEBUGGED / entitlement 只是"能力声明"，巨魔
+//     TrollStore 上 JIT 被关/未生效时仍可能粘滞置位 ⇒ 会假绿并"一启动就闪退"。
+//   · Universal/镜像路径：先要调试器在岗（便宜，挡掉连 attach 都没有的情形），再用
 //     「真能拿到并写入一块 JIT 区」定案（挡掉 attach-即成功的 <2s 假阳性）。
 BOOL AMEJITWaitReadyVerified(void) {
     if (!DeviceNeedsDebugJITMapping()) {
-        if (isJITEnabled(false)) return YES;
-        // ★ [JB-ADAPT] 越狱环境：JIT 原生可用（无需调试器服务 brk #0x69）。
-        //   用**执行式真能力**判据复核后再放行 —— 绝不因"检测到越狱"就放行，
-        //   也绝不只看 mprotect(RX)（★ [JIT-CACHE]：那在 db76cfb 上是假阳性）。
-        if (AMEJailbreakNativeJITPathApplies() && AMEJailbreakNativeJITReady()) return YES;
-        return NO;
+        return AMEJITBothMappingKindsExecutable();
     }
     if (!JIT26IsLikelyDebuggerKeepAttached()) {
         return NO;
     }
     return AMEJITVerifyWritableJITRegion();
+}
+
+// ★ [JIT-STATUS] ============================================================
+// 当前进程「JIT 到底能不能用」的三态判据（状态栏显示 + 启动门禁共用）。
+//
+// 设计要点（对齐用户诉求「自动判断环境，然后申请权限（如果不是开了 JIT 才进的）」）：
+//   · 能力 C（这台设备/这个安装方式**有能力**提供 JIT）≠ 实际可用 A（本次进程现在
+//     真的能执行自产代码）。巨魔 TrollStore 装机自带 JIT 能力，但用户把 JIT 关掉/
+//     未生效时进程仍不可用 —— 此时绝不能显示"已开启"，也绝不允许直接启动（否则
+//     JVM 首帧 JIT 取指 KERN_PROTECTION_FAILURE/SIGBUS 闪退）。
+//   · 唯一可信的"可用"A 判据 = **真的试一次**：执行式探针（真 mmap + 写一条指令 +
+//     mprotect RX + 执行 + 回读，含文件背衬 COW 型），或调试器服务 brk #0x69 拿到
+//     可写 JIT 区。CS_DEBUGGED / entitlement / TrollStore 装机都只是"能力声明"。
+// ============================================================================
+
+// 两型 mapping 的执行式探针（2s 限流缓存）。状态显示与门禁共用，避免每帧 mmap。
+static os_unfair_lock gAmeJITStatusProbeLock = OS_UNFAIR_LOCK_INIT;
+static int gAmeJITStatusProbe = 0;              // 0=未知 / 1=两型都OK / -1=否
+static NSTimeInterval gAmeJITStatusProbeTs = 0;
+
+static void ameJITInvalidateStatusProbe(void) {
+    os_unfair_lock_lock(&gAmeJITStatusProbeLock);
+    gAmeJITStatusProbe = 0;
+    gAmeJITStatusProbeTs = 0;
+    os_unfair_lock_unlock(&gAmeJITStatusProbeLock);
+}
+
+BOOL AMEJITBothMappingKindsExecutable(void) {
+    os_unfair_lock_lock(&gAmeJITStatusProbeLock);
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+    if (gAmeJITStatusProbe == 0 || (now - gAmeJITStatusProbeTs) > 2.0) {
+        AMEJITExecProbeResult rAnon = AMEDeviceProbeJITExecCapability();
+        AMEJITExecProbeResult rFile = AMEDeviceProbeFileBackedJITExecCapability();
+        BOOL ok = (rAnon == AMEJITExecProbeExecOK) && (rFile == AMEJITExecProbeExecOK);
+        gAmeJITStatusProbe = ok ? 1 : -1;
+        gAmeJITStatusProbeTs = now;
+        NSLog(@"[JIT-STATUS] both-kinds exec-probe: anon=%ld file-backed=%ld -> %@ "
+              @"(1=exec-OK 2=mprotect-denied 3=exec-FAULTED 4=inconclusive)",
+              (long)rAnon, (long)rFile, ok ? @"EXECUTABLE" : @"NOT-executable");
+    }
+    BOOL ok = (gAmeJITStatusProbe > 0);
+    os_unfair_lock_unlock(&gAmeJITStatusProbeLock);
+    return ok;
+}
+
+// 可用性三态缓存（1s），避免状态刷新/等待循环里反复重探。
+static os_unfair_lock gAmeJITUsabilityLock = OS_UNFAIR_LOCK_INIT;
+static NSTimeInterval gAmeJITUsabilityTs = 0;
+static AMEJITUsability gAmeJITUsabilityCache = AMEJITUsabilityUnavailable;
+static NSString *gAmeJITUsabilityWhy = nil;
+static NSString *gAmeJITUsabilityKey = nil;
+
+void AMEJITInvalidateUsabilityCache(void) {
+    os_unfair_lock_lock(&gAmeJITUsabilityLock);
+    gAmeJITUsabilityTs = 0;
+    gAmeJITUsabilityWhy = nil;
+    os_unfair_lock_unlock(&gAmeJITUsabilityLock);
+}
+
+NSString *AMEJITUsabilityDisplayKey(AMEJITUsability u) {
+    switch (u) {
+        case AMEJITUsabilityVerified:       return @"i18n_str_421";             // JIT: 已开启
+        case AMEJITUsabilityPermissionOnly: return @"ame_jit_status_perm_only"; // 权限已给，未验证
+        case AMEJITUsabilityUnavailable:
+        default:                            return @"i18n_str_422";             // JIT: 未开启
+    }
+}
+
+AMEJITUsability AMEJITCurrentUsability(NSString **whyOut, NSString **keyOut) {
+    os_unfair_lock_lock(&gAmeJITUsabilityLock);
+    NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+    if (gAmeJITUsabilityTs > 0 && (now - gAmeJITUsabilityTs) < 1.0 && gAmeJITUsabilityWhy) {
+        if (whyOut) *whyOut = gAmeJITUsabilityWhy;
+        if (keyOut) *keyOut = gAmeJITUsabilityKey;
+        AMEJITUsability cached = gAmeJITUsabilityCache;
+        os_unfair_lock_unlock(&gAmeJITUsabilityLock);
+        return cached;
+    }
+
+    // (1) 能力声明信号（C）：证明"有办法提供 JIT"，但不代表本次可用。
+    BOOL realEnt    = AMEDeviceHasRealJITEntitlement();          // dynamic-codesigning / allow-jit
+    BOOL declared   = isJITEnabled(NO);                          // 上面两条 + CS_DEBUGGED
+    BOOL tsInstall  = isTrollStoreInstall();                     // 巨魔装机（entitlement AND 磁盘标记）
+    BOOL noSandbox  = getEntitlementValue(@"com.apple.private.security.no-sandbox");
+    BOOL jbPath     = AMEJailbreakNativeJITPathApplies();
+    BOOL capability = (declared || realEnt || tsInstall || noSandbox || jbPath);
+
+    // (2) 实际可用（A）：只有"真跑过的证据"才算。
+    BOOL verified = NO;
+    NSString *how = nil;
+    if (gAmeJITVerified) {
+        verified = YES;
+        how = @"verified JIT region (brk #0x69 serviced)";
+    } else if (DeviceNeedsDebugJITMapping()) {
+        // 镜像/Universal 路径：JIT 只能由在场调试器代映射。显示层不主动发 brk
+        // （避免消耗 legacy 脚本唯一次断点）⇒ 只给"权限已给但不保证可用"，
+        // 真正的 brk 验证放到启动等待里（AMEJITWaitReadyVerified）。
+        verified = NO;
+        how = JIT26IsLikelyDebuggerKeepAttached()
+            ? @"mirror: live debugger present (brk #0x69 verify deferred to launch)"
+            : @"mirror: permission/CS_DEBUGGED present but NO live debugger";
+    } else {
+        // 非镜像：JVM 直接执行自产代码 ⇒ 执行式探针即最终判据（巨魔上自建
+        // CS_DEBUGGED 生效则通过；JIT 关掉/未生效则失败 ⇒ 绝不假绿）。
+        verified = AMEJITBothMappingKindsExecutable();
+        how = verified ? @"exec-probe(map+write+exec+readback) OK"
+                       : @"exec-probe FAILED (declared capability is NOT usable right now)";
+    }
+
+    AMEJITUsability u = verified ? AMEJITUsabilityVerified
+                       : (capability ? AMEJITUsabilityPermissionOnly : AMEJITUsabilityUnavailable);
+
+    NSString *why = [NSString stringWithFormat:
+        @"%@ | capability(declared=%d ent=%d trollstore=%d no-sandbox=%d jb=%@) "
+        @"verifiedRegion=%p mirror=%d debugger=%d %@",
+        how, declared, realEnt, tsInstall, noSandbox, AMEJailbreakEnvSummary(),
+        gAmeJITVerifiedRegion, DeviceNeedsDebugJITMapping(),
+        JIT26IsLikelyDebuggerKeepAttached(), AMEJITCapabilitySummary()];
+    NSLog(@"[JIT-STATUS] usability=%ld (%@) %@",
+          (long)u, u == AMEJITUsabilityVerified ? @"verified/可用"
+                : (u == AMEJITUsabilityPermissionOnly ? @"permission-only/权限已给未验证" : @"unavailable/不可用"),
+          why);
+
+    gAmeJITUsabilityCache = u;
+    gAmeJITUsabilityWhy = why;
+    gAmeJITUsabilityKey = AMEJITUsabilityDisplayKey(u);
+    gAmeJITUsabilityTs = now;
+    os_unfair_lock_unlock(&gAmeJITUsabilityLock);
+    if (whyOut) *whyOut = why;
+    if (keyOut) *keyOut = AMEJITUsabilityDisplayKey(u);
+    return u;
+}
+
+// ★ [JIT-ENV] 环境分类（多证据；进程内缓存一次）。
+AMEJITEnvKind AMEJITEnvironmentKind(void) {
+    static AMEJITEnvKind cached = AMEJITEnvKindUnknown;
+    static dispatch_once_t once = 0;
+    dispatch_once(&once, ^{
+        AMEJBEnvironment jb = AMEJailbreakEnvironment();
+        BOOL ts = isTrollStoreInstall();
+        if (ts) {
+            cached = AMEJITEnvKindTrollStore;
+        } else if (jb == AMEJBEnvironmentRootful || jb == AMEJBEnvironmentRootless ||
+                   jb == AMEJBEnvironmentRootHide) {
+            cached = AMEJITEnvKindJailbroken;
+        } else if (getEntitlementValue(@"get-task-allow")) {
+            // 侧载（AltStore/Sideloadly/SideStore 等）通常带 get-task-allow，
+            // JIT 需外部工具（StikDebug 等）attach。
+            cached = AMEJITEnvKindSideload;
+        } else {
+            cached = AMEJITEnvKindPlain;
+        }
+        NSLog(@"[JIT-ENV] detected env=%@ (trollstore=%d jb=%@ get-task-allow=%d no-sandbox=%d)",
+              AMEJITEnvironmentName(cached), ts, AMEJailbreakEnvSummary(),
+              getEntitlementValue(@"get-task-allow") ? 1 : 0,
+              getEntitlementValue(@"com.apple.private.security.no-sandbox") ? 1 : 0);
+    });
+    return cached;
+}
+
+NSString *AMEJITEnvironmentName(AMEJITEnvKind kind) {
+    switch (kind) {
+        case AMEJITEnvKindTrollStore: return @"trollstore";
+        case AMEJITEnvKindJailbroken: return @"jailbreak";
+        case AMEJITEnvKindSideload:   return @"sideload";
+        case AMEJITEnvKindPlain:      return @"plain";
+        default:                      return @"unknown";
+    }
+}
+
+// 巨魔自开 JIT：no-sandbox 安装下本 App 可用「子进程 PT_TRACE_ME + 父进程 PT_DETACH」
+// 让**父进程（本进程）**获得 CS_DEBUGGED（= 与 main.m 启动期同一机制，可重入）。
+// 返回 YES = 本次调用后拿到了 CS_DEBUGGED（真可用性仍由执行式探针复核）。
+static BOOL ameJITTrollStoreSelfEnable(NSString **reasonOut) {
+    if (!getEntitlementValue(@"com.apple.private.security.no-sandbox")) {
+        if (reasonOut) *reasonOut = @"no-sandbox entitlement absent (not a TrollStore/self-managed install)";
+        return NO;
+    }
+    const char *exe = NSBundle.mainBundle.executablePath.fileSystemRepresentation;
+    if (exe == NULL || exe[0] == '\0') {
+        if (reasonOut) *reasonOut = @"main bundle executable path unavailable";
+        return NO;
+    }
+    int pid = 0;
+    int ret = posix_spawnp(&pid, exe, NULL, NULL, (char *[]){(char *)exe, (char *)"", NULL}, environ);
+    if (ret != 0) {
+        if (reasonOut) *reasonOut = [NSString stringWithFormat:@"posix_spawn failed ret=%d errno=%d", ret, errno];
+        return NO;
+    }
+    waitpid(pid, NULL, WUNTRACED);
+    ptrace(PT_DETACH, pid, NULL, 0);
+    kill(pid, SIGTERM);
+    wait(NULL);
+    return isJITEnabled(true);   // CS_DEBUGGED（与 main.m 同判据）
+}
+
+AMEJITEnsureResult AMEJITEnsureJITUsable(NSString **reasonOut) {
+    AMEJITEnvKind env = AMEJITEnvironmentKind();
+    NSString *envName = AMEJITEnvironmentName(env);
+
+    NSString *why0 = nil;
+    AMEJITUsability u0 = AMEJITCurrentUsability(&why0, NULL);
+    NSLog(@"[JIT-ENV] env=%@ | jit_at_launch=%@ (usability=%ld) %@",
+          envName, (u0 == AMEJITUsabilityVerified) ? @"YES" : @"NO", (long)u0, why0);
+
+    if (u0 == AMEJITUsabilityVerified) {
+        if (reasonOut) *reasonOut = @"already usable (exec-probe/brk verified)";
+        AMEJITAppendCrashNote([NSString stringWithFormat:
+            @"[JIT-ENV] env=%@ jit_at_launch=YES effective=available", envName]);
+        return AMEJITEnsureResultAlreadyUsable;
+    }
+
+    NSLog(@"[JIT-ENV] env=%@ jit not usable yet ⇒ requesting JIT permission", envName);
+    AMEJITEnsureResult res = AMEJITEnsureResultFailed;
+    NSString *reqWhy = nil;
+
+    switch (env) {
+        case AMEJITEnvKindTrollStore: {
+            BOOL ok = ameJITTrollStoreSelfEnable(&reqWhy);
+            if (ok) {
+                res = AMEJITEnsureResultNowUsable;
+            } else {
+                // 自开不行 ⇒ 引导一次（用户点 TrollStore/工具里的开关），
+                // 由 UI 的使能器流程去 apple-magnifier:// 申请。
+                res = AMEJITEnsureResultNeedsExternal;
+            }
+            break;
+        }
+        case AMEJITEnvKindJailbroken:
+            res = AMEJITEnsureResultNeedsExternal;
+            reqWhy = [NSString stringWithFormat:
+                @"jailbreak native JIT not usable; enable 'Allow JIT in Apps' (Dopamine) / platform JIT (%@)",
+                AMEJailbreakEnvSummary()];
+            break;
+        case AMEJITEnvKindSideload:
+            res = AMEJITEnsureResultNeedsExternal;
+            reqWhy = @"needs external JIT tool (StikDebug/SideStore/StosDebug/AltStore…)";
+            break;
+        case AMEJITEnvKindPlain:
+        default:
+            res = AMEJITEnsureResultNeedsExternal;
+            reqWhy = @"plain-signed build: JIT needs an external tool/debugger; cannot self-enable";
+            break;
+    }
+
+    // 复核实际可用性（先作废探针/可用性缓存，反映"刚申请"后的真实状态）。
+    ameJITInvalidateStatusProbe();
+    AMEDeviceInvalidateJITExecProbe();
+    AMEJITInvalidateUsabilityCache();
+    NSString *why1 = nil;
+    AMEJITUsability u1 = AMEJITCurrentUsability(&why1, NULL);
+    BOOL eff = (u1 == AMEJITUsabilityVerified);
+
+    NSLog(@"[JIT-ENV] request result=%@ reason=%@",
+          eff ? @"OK" : (res == AMEJITEnsureResultNeedsExternal ? @"NEEDS-EXTERNAL" : @"FAIL"),
+          reqWhy ?: @"-");
+    NSLog(@"[JIT-ENV] effective=%@ (usability=%ld) %@",
+          eff ? @"available" : @"unavailable", (long)u1, why1);
+    AMEJITAppendCrashNote([NSString stringWithFormat:
+        @"[JIT-ENV] env=%@ jit_at_launch=NO ⇒ request result=%@ effective=%@ reason=%@",
+        envName, eff ? @"OK" : @"FAIL", eff ? @"available" : @"unavailable", reqWhy ?: @"-"]);
+
+    if (eff) {
+        if (reasonOut) *reasonOut = @"now usable after request";
+        return AMEJITEnsureResultNowUsable;
+    }
+    if (reasonOut) *reasonOut = reqWhy ?: why1;
+    return res;
+}
+
+NSString *AMEJITLaunchGateReason(void) {
+    if (AMEJITWaitReadyVerified()) {
+        NSLog(@"[JIT-STATUS] pre-launch gate: ALLOW (JIT verified usable; verifiedRegion=%p)",
+              AMEJITVerifiedRegionPtr());
+        return nil;
+    }
+    NSString *why = nil;
+    AMEJITUsability u = AMEJITCurrentUsability(&why, NULL);
+    NSString *reason = [NSString stringWithFormat:
+        @"JIT not really usable at launch (usability=%ld, env=%@): %@",
+        (long)u, AMEJITEnvironmentName(AMEJITEnvironmentKind()), why ?: @"-"];
+    NSLog(@"[JIT-STATUS] pre-launch gate: BLOCK -- %@", reason);
+    AMEJITAppendCrashNote([NSString stringWithFormat:@"[JIT-STATUS] launch blocked: %@", reason]);
+    return reason;
+}
+
+// ★ [JIT-NOLOG] 可导出崩溃日志写入（与 JavaLauncher 的 [VER-ISOLATE]/[LOG-FIX] 同路径）。
+void AMEJITAppendCrashNote(NSString *note) {
+    if (note.length == 0) return;
+    const char *home = getenv("POJAV_HOME");
+    NSString *instRoot = ameVIInstanceRoot();
+    NSString *path = nil;
+    if (instRoot.length > 0) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:instRoot
+                                 withIntermediateDirectories:YES attributes:nil error:nil];
+        path = [instRoot stringByAppendingPathComponent:@"native-crash.log"];
+    } else if (home != NULL && home[0] != '\0') {
+        path = [@(home) stringByAppendingPathComponent:@"native-crash.log"];
+    }
+    if (path.length == 0) {
+        NSLog(@"[JIT-NOLOG] cannot resolve native-crash.log path (POJAV_HOME unset) -- note in main log only: %@", note);
+        return;
+    }
+    NSString *line = [NSString stringWithFormat:@"[%lld] %@\n", (long long)time(NULL), note];
+    const char *cpath = path.fileSystemRepresentation;
+    int fd = open(cpath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) {
+        NSLog(@"[JIT-NOLOG] open(native-crash.log=%@) failed: %s -- note in main log only: %@",
+              path, strerror(errno), note);
+        return;
+    }
+    ssize_t n = write(fd, line.UTF8String, strlen(line.UTF8String));
+    close(fd);
+    if (n <= 0) {
+        NSLog(@"[JIT-NOLOG] write(native-crash.log) failed -- note in main log only: %@", note);
+    }
+    // 硬链接 <POJAV_HOME>/native-crash.log → 实例真身（与 [LOG-FIX] 同口径；
+    // 目标已是同一 inode 的硬链接时，删名再建不会动到实例内那份）。
+    if (instRoot.length > 0 && home != NULL && home[0] != '\0') {
+        NSString *dst = [@(home) stringByAppendingPathComponent:@"native-crash.log"];
+        if (![path isEqualToString:dst]) {
+            ameVIHardLinkLog(path, dst);
+        }
+    }
 }
 
 // 已通过验证的 JIT 区（未验证过返回 NULL）。供诊断/复用。
@@ -1821,6 +2154,10 @@ void AMEDeviceInvalidateJITExecProbe(void) {
     gAmeJBNativeJITProbe = 0;
     gAmeJBNativeJITReady = NO;
     os_unfair_lock_unlock(&gAmeJITExecProbeLock);
+    // ★ [JIT-STATUS] 能力可能已变 ⇒ 三态判据与其执行式探针缓存一并作废，
+    //   让下一次状态显示/启动门禁反映"此刻"的真实可用性（不假绿、也不假黄）。
+    ameJITInvalidateStatusProbe();
+    AMEJITInvalidateUsabilityCache();
 }
 
 // ★ [JIT-EXEC-2] ============================================================
@@ -1970,9 +2307,12 @@ static BOOL AMEJITExec2AllowNoExec(void) {
 NSString *AMEJITExec2LaunchBlockReason(void) {
     if (AMEJITPathForceMode() == AMEJITPathForceNative) return nil;   // 显式 opt-in 旧行为
     if (AMEJITExec2AllowNoExec()) return nil;                         // 逃生开关
-    if (DeviceNeedsDebugJITMapping()) return nil;                     // Universal/mirror 路径交给既有自检
-    if (JIT26IsLikelyDebuggerKeepAttached()) return nil;              // 有活的调试器在岗 ⇒ 交给它
+    if (DeviceNeedsDebugJITMapping()) return nil;                     // Universal/mirror 路径交给既有 brk 自检
 
+    // ★ [JIT-STATUS] 非镜像路径：JVM 直接执行自产代码 ⇒ 只认"真跑过的执行式探针"。
+    //   不再因 "有活调试器在岗" 就放行：巨魔 TrollStore 自建 CS_DEBUGGED / 粘滞标志会
+    //   假阳性（探针全灭却"看起来 attach 了"）⇒ 一启动就在 JIT 取指 SIGBUS 闪退。
+    //   （显式 opt-in：AMETHYST_JIT_PATH=native / AMETHYST_JIT_EXEC2_ALLOW_NOEXEC=1。）
     AMEJITExecProbeResult rAnon = AMEDeviceProbeJITExecCapability();
     AMEJITExecProbeResult rFile = AMEDeviceProbeFileBackedJITExecCapability();
     // 只有"确定的失败"才算失败：Inconclusive(4) = 探针本身跑不起来（临时目录不可写等），
@@ -2510,4 +2850,37 @@ BOOL ameVIWizardShouldPresent(void) {
 void ameVIWizardMarkDontShowAgain(void) {
     setPrefObject(kAmeVIWizardOffKey, @YES);   // 幂等：重复调用结果一致；只在用户选择时写一次
     NSLog(@"★ [VI-FLOW] 向导：用户选「以后不再提示」⇒ 哨兵已落（%@），之后不再自动弹", kAmeVIWizardOffKey);
+}
+
+#pragma mark - ★ [NO-BLOCK] 启动门禁统一判定（仅渲染器类可阻断）
+
+// 见 utils.h 说明。判据刻意只有一条：类别 == 渲染器。
+// 这样「点启动 = 真的去启动」在代码层面可静态证明：任何非渲染器门禁调用
+// AmeLaunchGateMayBlock 都拿到 NO，只能走「警告 + 继续启动」。
+NSString *AmeLaunchGateKindName(AmeLaunchGateKind kind) {
+    switch (kind) {
+        case AmeLaunchGateKindRenderer: return @"renderer";
+        case AmeLaunchGateKindDownload: return @"download";
+        case AmeLaunchGateKindJIT:      return @"jit";
+        case AmeLaunchGateKindAccount:  return @"account";
+        case AmeLaunchGateKindInstance: return @"instance";
+        case AmeLaunchGateKindFiles:    return @"files";
+        case AmeLaunchGateKindNetwork:  return @"network";
+        case AmeLaunchGateKindDisk:     return @"disk";
+        case AmeLaunchGateKindUpdate:   return @"update";
+        case AmeLaunchGateKindOther:    return @"other";
+    }
+    return @"other";
+}
+
+BOOL AmeLaunchGateMayBlock(AmeLaunchGateKind kind) {
+    // ★ 唯一例外：渲染器选择/初始化。
+    return (kind == AmeLaunchGateKindRenderer);
+}
+
+BOOL AmeLaunchGateNoteNonBlock(NSString *reason, AmeLaunchGateKind kind) {
+    // 非渲染器门禁一律「警告 + 继续启动」；这里写一行可一眼检索的判据。
+    NSLog(@"[NO-BLOCK] gate=%@ kind=%@ ⇒ 继续启动（非渲染器不阻止启动）",
+          reason.length > 0 ? reason : @"(unspecified)", AmeLaunchGateKindName(kind));
+    return YES;
 }

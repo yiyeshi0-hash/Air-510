@@ -44,12 +44,16 @@ else
 CMAKE_BUILD_TYPE := Debug
 endif
 
-# ★ [RENDERER-GAP] 新增渲染器（VGPU / GL4ESZL2 / VirGL）构建开关。
-# ★ [DROP-NGG4ES] 原第四支 NG-GL4ES 已整支移除（竞争对手源码，不取）。
-# 默认 0 = 完全不参与构建，默认 IPA 与既有渲染器行为【零变化】。
+# ★ [RENDERER-GAP] 新增渲染器（VGPU / GL4ESZL2 / NG-GL4ES / VirGL）。
+# 默认 0：VGPU 不参与构建、GL4ESZL2 / VirGL 不进 payload 依赖图
+#          （这几个是可选/实验性的，默认 IPA 与既有渲染器行为零变化）。
 # 置 1 后：native 透传 -DAME_RENDERER_GAP_VGPU=ON（构建 libvgpu.dylib），
 #          且 payload 追加 dep_gl4eszl2 dep_virgl 两个目标。
 # 用法：make RENDERER_GAP_EXTRAS=1 payload
+#
+# ⚠ NG-GL4ES（"Krypton Wrapper"）【不】受此开关控制：它是用户可见的一等渲染器
+#   （对应原 f907a3f180 的无条件 payload 依赖），dep_nggl4es 直接挂在 payload 上，
+#   CI 的 `gmake dsym package` 每次都会构建 libnggl4es.dylib。
 RENDERER_GAP_EXTRAS ?= 0
 # ★ [RENDERER-GAP] 由上面的开关派生：默认空 → payload 依赖图与既有完全一致。
 ifeq (1,$(RENDERER_GAP_EXTRAS))
@@ -79,7 +83,7 @@ ifeq ($(shell test "$(OSVER)" -gt 14; echo $$?),0)
 #     ⇒ 旧默认会把 App 装到空路径。这里自动探测随机 jbroot（优先）并加尾斜杠
 #     （deploy 用 $(PREFIX)Applications/... 拼接）。显式传 PREFIX=... 仍覆盖（?=）。
 #   注：.ipa/.tipa 打包路径（package target）不使用 PREFIX，不受影响。
-PREFIX      ?= $(shell d=$$(ls -d /var/containers/Bundle/Application/.jbroot-*/ 2>/dev/null | head -1); if [ -n "$$d" ]; then echo "$$d"; elif [ -d /var/jb ]; then echo "/var/jb/"; else echo "/var/jb/"; fi)
+PREFIX      ?= $(shell d=$$(ls -d /var/containers/Bundle/Application/.jbroot-*/ 2>/dev/null | head -1); if [ -n "$$d" ]; then printf '%s' "$$d"; else echo "/var/jb/"; fi)
 else
 PREFIX      ?= /
 endif
@@ -205,6 +209,12 @@ METHOD_CHANGE_PLAT = \
 	
 # Function to package the application
 # 修复：使用统一的命名格式 amethystremastered
+# ★ [SIGN-ZIP] 打包器必须保留 unix 元数据（符号链接 / 权限位 / xattr）。
+#   `zip` 不保证保留符号链接与 mode ⇒ .framework 内部结构被压平 ⇒ 装机时
+#   ApplicationVerificationFailed("Failed to verify code signature of
+#   .../Frameworks/UnzipKit.framework")。改用 macOS 原生 ditto：
+#     ditto -c -k --sequesterRsrc --keepParent
+#   slimmed 变体要用 --exclude，ditto 不支持 ⇒ 退化为 `zip -y`（-y = 存储符号链接）。
 METHOD_PACKAGE = \
 	if [ '$(TROLLSTORE_JIT_ENT)' == '1' ]; then \
 		IPA_SUFFIX="-trollstore.tipa"; \
@@ -214,11 +224,59 @@ METHOD_PACKAGE = \
 	rm -f $(OUTPUTDIR)/com.air-devs.air-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX; \
 	rm -f $(OUTPUTDIR)/com.air-devs.air.slimmed-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX; \
 	if [ '$(SLIMMED_ONLY)' = '0' ]; then \
-		zip --symlinks -r $(OUTPUTDIR)/com.air-devs.air-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX Payload; \
+		( cd $(OUTPUTDIR) && ditto -c -k --sequesterRsrc --keepParent Payload \
+			com.air-devs.air-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX ); \
+		_top=$$(unzip -Z1 $(OUTPUTDIR)/com.air-devs.air-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX | awk -F/ '{print $$1}' | sort -u | tr '\n' ' '); \
+		if [ "$$_top" != 'Payload ' ]; then \
+			echo "!! [SIGN-ZIP] IPA layout gate FAILED: root=[$$_top] (must be exactly Payload/)"; exit 1; \
+		fi; \
+		echo "[SIGN-ZIP] IPA layout OK root=[$$_top]"; \
 	fi; \
 	if [ '$(SLIMMED)' = '1' ] || [ '$(SLIMMED_ONLY)' = '1' ]; then \
-		zip --symlinks -r $(OUTPUTDIR)/com.air-devs.air.slimmed-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX Payload --exclude='Payload/AngelAuraAmethyst.app/java_runtimes/*'; \
+		( cd $(OUTPUTDIR) && zip -y -qr com.air-devs.air.slimmed-$(VERSION)-$(PLATFORM_NAME)$$IPA_SUFFIX Payload \
+			-x 'Payload/AngelAuraAmethyst.app/java_runtimes/*' ); \
 	fi
+
+# ★ [SIGN-ZIP] 硬门禁：打包前必须满足
+#   ① 每个 .app / .framework 都有自己的 _CodeSignature/CodeResources
+#      （ldid 只写 _CodeSignature/.ldid.CodeResources —— iOS installd 不认这个名字，
+#        会报 Failed to verify code signature of .../Frameworks/<X>.framework）
+#   ② 整包不得残留 _CodeSignature/.ldid.CodeResources
+#   不满足就中止出包，避免把"装不上"的包推给手机。
+METHOD_SIGNGATE = \
+	_bad=0; \
+	for _b in $$(find $(1) -type d \( -name '*.app' -o -name '*.framework' \)); do \
+		if [ ! -f "$$_b/_CodeSignature/CodeResources" ]; then \
+			echo "!! [SIGN-ZIP] missing _CodeSignature/CodeResources: $$_b"; _bad=$$((_bad+1)); \
+		fi; \
+	done; \
+	_dot=$$(find $(1) -name '.ldid.CodeResources' | wc -l | tr -d ' '); \
+	echo "[SIGN-ZIP] bundles missing CodeResources=$$_bad  stray .ldid.CodeResources=$$_dot"; \
+	if [ "$$_bad" != '0' ] || [ "$$_dot" != '0' ]; then \
+		echo "!! [SIGN-ZIP] signature seal gate FAILED -- refusing to package"; exit 1; \
+	fi
+
+# ★ [SIGN-ZIP] 自底向上重封：在【所有】Mach-O 改动（vtool/替换/ldid）之后调用。
+#   顺序铁律 = 先动文件 → 再签 → 最后打包；本函数确保每个 bundle 有标准 CodeResources。
+#   用真 codesign（不是 ldid）：只有 codesign 写 _CodeSignature/CodeResources，
+#   且只有 codesign 的签名能通过 `codesign -v --deep --strict`。
+METHOD_RESEAL = \
+	_e="$(if $(_SIGNZIP_ENT),$(_SIGNZIP_ENT),/tmp/ame_reseal_ent.plist)"; \
+	if [ ! -s "$$_e" ]; then \
+		ldid -e $(1)/$$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' $(1)/Info.plist 2>/dev/null) > "$$_e" 2>/dev/null || true; \
+	fi; \
+	find $(1) -type f | while IFS= read -r _f; do \
+		case "$$(file -b "$$_f")" in *Mach-O*) codesign --force --sign - --timestamp=none "$$_f" >/dev/null 2>&1 || true;; esac; \
+	done; \
+	find $(1) -type d -name '*.framework' | while IFS= read -r _b; do \
+		codesign --force --sign - --timestamp=none "$$_b" >/dev/null 2>&1 || true; \
+	done; \
+	if [ -s "$$_e" ]; then \
+		codesign --force --sign - --timestamp=none --entitlements "$$_e" --generate-entitlement-der $(1) || exit 1; \
+	else \
+		codesign --force --sign - --timestamp=none $(1) || exit 1; \
+	fi; \
+	echo '[SIGN-ZIP] re-sealed $(1)'
 
 # Function to download and unpack Java runtimes.
 # ★ [JRE-NEST] 原条件把「缺 release」与「无归档」用 && 串起来 ⇒ 只有当两者同时成立才解包：
@@ -1085,7 +1143,7 @@ assets:
 	fi
 	echo '[Amethyst v$(VERSION)] assets - end'
 
-payload: native dep_mg dep_shader_shims dep_openal_shim dep_angle_freeze dep_sdl3_guard java jre assets $(RENDERER_GAP_PAYLOAD_DEPS)
+payload: native dep_mg dep_shader_shims dep_openal_shim dep_angle_freeze dep_sdl3_guard dep_nggl4es java jre assets shader-glslang-pack $(RENDERER_GAP_PAYLOAD_DEPS)
 	echo '[Amethyst v$(VERSION)] payload - start'
 	# ★ [26.4-SPVC] 打包前对账 jar 内 natives/ios|ir1 的 libspvc.dylib 与树内
 	#   canonical（设备上真正生效的是 jar 里那份，见 check_spvc_provenance.py）。
@@ -1106,7 +1164,8 @@ payload: native dep_mg dep_shader_shims dep_openal_shim dep_angle_freeze dep_sdl
 	$(call METHOD_DIRCHECK,$(WORKINGDIR)/AngelAuraAmethyst.app/libs_caciocavallo17)
 	cp -R $(SOURCEDIR)/Natives/resources/en.lproj/LaunchScreen.storyboardc $(WORKINGDIR)/AngelAuraAmethyst.app/Base.lproj/ || exit 1
 	cp -R $(SOURCEDIR)/Natives/resources/* $(WORKINGDIR)/AngelAuraAmethyst.app/ || exit 1
-	# ★ [JNA-FIX] 硬门禁：预签名 iOS 平台 libjnidispatch.jnilib 必须在包内。
+	# ★ [JNA-FIX]/[JNA-INBUNDLE] 硬门禁（前半段：存在性 + 平台）：预签名 iOS 平台
+	#   libjnidispatch.jnilib 必须在包内。签名复核在 reseal 之后的 [JNA-INBUNDLE] 门禁。
 	#   缺件时 JNA 5.13 会【静默】回退到从 jna-5.13.0.jar 解包 macOS 平台镜像
 	#   （LC_BUILD_VERSION platform=MACOS，UUID C34856C0-…），iOS dyld 直接报
 	#   "code signature invalid"（不是 missing）→ UnsatisfiedLinkError →
@@ -1187,6 +1246,29 @@ payload: native dep_mg dep_shader_shims dep_openal_shim dep_angle_freeze dep_sdl
 	# 这个假设在同步 Ynnyny 顶层 dylib 时被打破。
 	$(call METHOD_MACHO,$(OUTPUTDIR)/Payload/AngelAuraAmethyst.app,$(call METHOD_CHANGE_PLAT,$(PLATFORM),$$file)); \
 	$(call METHOD_MACHO,$(OUTPUTDIR)/java_runtimes,$(call METHOD_CHANGE_PLAT,$(PLATFORM),$$file));
+	# ★ [SIGN-ZIP] 顺序铁律：上面所有 Mach-O 改动（vtool 重打标 + ldid -S -M）都会让
+	#   下面这个 bundle 资源封印失效，而 ldid 只会把它写成 .ldid.CodeResources（iOS 不认）
+	#   ⇒ 必须在最后用真 codesign 自底向上重封一次。
+	$(call METHOD_RESEAL,$(OUTPUTDIR)/Payload/AngelAuraAmethyst.app)
+	# ★ [JNA-INBUNDLE] 门禁（顺序铁律：必须在 METHOD_RESEAL 之后、METHOD_SIGNGATE/打包之前）：
+	#   包内 Frameworks/libjnidispatch.jnilib 必须存在【且已被签名】。METHOD_RESEAL 会对
+	#   包内每个 Mach-O（含本 .jnilib）跑 codesign --force --sign -，这里再复核签名有效，
+	#   防止"文件在但漏进签名流程"⇒ 真机 dlopen 报 code signature invalid（正是用户侧
+	#   载整包重签后 JNA 崩的形态）。缺件或未签名 ⇒ 直接红，拒绝出包。
+	#   与 [SIGN-ZIP] 协同：本检查不改字节、不重签，只复核；放在 reseal 之后故看到的是
+	#   最终签名状态。前半段（文件存在 + platform=IOS）在 payload 早段的 [JNA-FIX] 门禁。
+	@jna="$(OUTPUTDIR)/Payload/AngelAuraAmethyst.app/Frameworks/libjnidispatch.jnilib"; \
+	if [ ! -f "$$jna" ]; then \
+		echo '!! [JNA-INBUNDLE] ERROR: Frameworks/libjnidispatch.jnilib 不在打包产物里 -- JNA 会解包 jna.jar 里的 mac 平台镜像，iOS 必崩'; \
+		exit 1; \
+	fi; \
+	if ! codesign --verify --strict "$$jna" >/dev/null 2>&1; then \
+		echo "!! [JNA-INBUNDLE] ERROR: 包内 libjnidispatch.jnilib 未签名/签名无效: $$jna -- 真机 dlopen 会报 code signature invalid"; \
+		codesign -dv --verbose=2 "$$jna" 2>&1 | sed 's/^/[JNA-INBUNDLE] /'; \
+		exit 1; \
+	fi; \
+	echo "[JNA-INBUNDLE] OK: signed bundle jnidispatch ($$(codesign -dv "$$jna" 2>&1 | grep -m1 'Signature='), $$(stat -f%z "$$jna") bytes)"
+	$(call METHOD_SIGNGATE,$(OUTPUTDIR)/Payload)
 	echo '[Amethyst v$(VERSION)] payload - end'
 
 deploy:
@@ -1229,6 +1311,7 @@ package: payload
 		echo 'Skipped codesigning. If not intentional, check your variables.'; \
 	fi
 	cd $(OUTPUTDIR); \
+	$(call METHOD_SIGNGATE,$(OUTPUTDIR)/Payload); \
 	$(call METHOD_PACKAGE); \
 	zip --symlinks -r $(OUTPUTDIR)/java_runtimes.zip java_runtimes; \
 	echo '[Amethyst v$(VERSION)] package - end'
@@ -1259,16 +1342,65 @@ clean:
 
 # ============================================================================
 # ★ [RENDERER-GAP] 新增渲染器构建目标（来自 Gsjsjzhznsz/Air-Minecraft-iOS-Launcher）。
-#   默认不参与 `all`/`payload` 依赖图；只有 RENDERER_GAP_EXTRAS=1 时 payload 才
-#   追加这些目标（见文件顶部 RENDERER_GAP_PAYLOAD_DEPS）。亦可单独调用：
-#     make dep_gl4eszl2 dep_virgl
+#   dep_gl4eszl2 / dep_virgl 默认不参与 `all`/`payload` 依赖图；只有
+#   RENDERER_GAP_EXTRAS=1 时 payload 才追加它们（见文件顶部 RENDERER_GAP_PAYLOAD_DEPS）。
+#   dep_nggl4es（"Krypton Wrapper"）例外：无条件挂在 payload 上，每次都构建。
+#   亦可单独调用：
+#     make dep_nggl4es
+#     make RENDERER_GAP_EXTRAS=1 dep_gl4eszl2 dep_virgl
 #   产出的 *.dylib 落在 $(WORKINGDIR)/，由 payload 的 "cp $(WORKINGDIR)/*.dylib"
 #   自动带进 app 的 Frameworks；LauncherPreferences 的存在性过滤随后才会显示选项。
 # ============================================================================
 
-# ★ [DROP-NGG4ES] 此处原为 `dep_nggl4es: dep_mg` 目标（构建 ThirdParty/ZalithLauncher2/
-#   → libnggl4es.dylib，链 dep_mg 的 glslang 静态库 + SPIRV-Cross impl）。已整支移除
-#   （竞争对手源码，不取）；payload 依赖不再含 dep_nggl4es。
+# --- dep_nggl4es：NG-GL4ES（"Krypton Wrapper"，BZLZHH/NG-GL4ES，MIT）-----------
+# ZalithLauncher 2 用的 gl4es 分支：能处理更高级的着色器、几乎全 MC 版本可跑。
+# vendored 源码在 ThirdParty/NG-GL4ES（见其 CMakeLists 的 PROVENANCE 头）。
+# 作为独立 cmake 树构建，链接 dep_mg 出来的 glslang 静态库（pin f5f664d 15.0.0 +
+# lvalue-nullguard + pool-zero/size-guards 双崩溃补丁，继承崩溃家族修复；NG 自带的
+# 15.4 头已从树中移除，防头/库漂移）与预编译的 SPIRV-Cross C API impl dylib。
+# 产出 libnggl4es.dylib，由 payload 的 "cp $(WORKINGDIR)/*.dylib" 随包带走。
+# 依赖 dep_mg：glslang 静态库必须先就位（-j 并行下无序，需目标级先决条件）。
+# ★ 无条件挂在 payload 上（用户可见的一等渲染器，不受 RENDERER_GAP_EXTRAS 控制）。
+dep_nggl4es: dep_mg
+	echo '[Amethyst v$(VERSION)] dep_nggl4es - start'
+	mg_bindir=$(WORKINGDIR)/mobileglues/3rdparty/glslang; \
+	mg_spirv_a=$$mg_bindir/SPIRV/libSPIRV.a; \
+	[ -f "$$mg_spirv_a" ] || mg_spirv_a=$$(find $(WORKINGDIR)/mobileglues -type f -name libSPIRV.a -print -quit 2>/dev/null); \
+	mg_glslang_a=$$mg_bindir/glslang/libglslang.a; \
+	[ -f "$$mg_glslang_a" ] || mg_glslang_a=$$(find $(WORKINGDIR)/mobileglues -type f -name libglslang.a -print -quit 2>/dev/null); \
+	mg_rl_a=$$mg_bindir/glslang/libglslang-default-resource-limits.a; \
+	[ -f "$$mg_rl_a" ] || mg_rl_a=$$(find $(WORKINGDIR)/mobileglues -type f -name libglslang-default-resource-limits.a -print -quit 2>/dev/null); \
+	if [ -z "$$mg_spirv_a" ] || [ ! -f "$$mg_spirv_a" ] || [ -z "$$mg_glslang_a" ] || [ ! -f "$$mg_glslang_a" ] || [ -z "$$mg_rl_a" ] || [ ! -f "$$mg_rl_a" ]; then \
+		echo "ERROR: [nggl4es] glslang static libs unresolved (spirv=$$mg_spirv_a glslang=$$mg_glslang_a rl=$$mg_rl_a) - dep_mg must run first"; \
+		exit 1; \
+	fi; \
+	extra_glslang_libs=""; \
+	for l in libOGLCompiler.a libOSDependent.a; do \
+		if [ -f "$$mg_bindir/glslang/$$l" ]; then \
+			extra_glslang_libs="$$extra_glslang_libs;$$mg_bindir/glslang/$$l"; \
+		fi; \
+	done; \
+	ngg_libs="$$mg_spirv_a;$$mg_glslang_a;$$mg_rl_a$$extra_glslang_libs"; \
+	echo "[nggl4es] linking against glslang statics: $$ngg_libs"; \
+	mkdir -p $(WORKINGDIR)/nggl4es; \
+	cd $(WORKINGDIR)/nggl4es && cmake \
+		-DMACOS="1" \
+		-DCMAKE_CROSSCOMPILING=true \
+		-DCMAKE_SYSTEM_NAME=Darwin \
+		-DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+		-DCMAKE_OSX_SYSROOT="$(SDKPATH)" \
+		-DCMAKE_OSX_ARCHITECTURES=arm64 \
+		-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+		-DCMAKE_C_FLAGS="-arch arm64" \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DNGGL4ES_GLSLANG_INCLUDE="$(SOURCEDIR)/Natives/external/MobileGlues/MobileGlues-cpp/3rdparty;$(SOURCEDIR)/Natives/external/MobileGlues/MobileGlues-cpp/3rdparty/glslang" \
+		-DNGGL4ES_GLSLANG_LIBS="$$ngg_libs" \
+		-DNGGL4ES_SPVC_IMPL="$(SOURCEDIR)/Natives/resources/Frameworks/libspirv-cross-c-shared.0.impl.dylib" \
+		-DNGGL4ES_FRAMEWORK_DIR="$(SOURCEDIR)/Natives/resources/Frameworks" \
+		$(SOURCEDIR)/ThirdParty/NG-GL4ES/ || exit 1
+	cmake --build $(WORKINGDIR)/nggl4es --config RelWithDebInfo -j$(JOBS) --target nggl4es || exit 1
+	cp $(WORKINGDIR)/nggl4es/libnggl4es.dylib $(WORKINGDIR)/ || exit 1
+	echo '[Amethyst v$(VERSION)] dep_nggl4es - end'
 
 dep_gl4eszl2:
 	@echo '[Amethyst v$(VERSION)] [RENDERER-GAP] dep_gl4eszl2 - start'

@@ -198,6 +198,10 @@ static const NSUInteger kMCStageIndexVerify = 5;
               name, (long)(retryCount + 1), (long)attemptCount,
               (unsigned long)(candidateIndex + 1), (unsigned long)mirrorCandidates.count);
     }
+    // ★ [PREDL] 现补原因可辨识：能走到这里 = 该文件本地缺失或 SHA1 校验不通过，
+    //   必须联网取回。启动期若看到这行，即说明「安装时没装全」或「文件损坏」——
+    //   这正是用户抱怨的“点了启动才开始下载”。启动端应只在【确实缺件】时出现此日志。
+    NSLog(@"[MCDL][PREDL] 现补 %@（本地缺失或校验失败）→ %@", name, replacedURL);
     NSURLRequest *request = [NSURLRequest requestWithURL:[NSURL URLWithString:replacedURL]];
     __block NSProgress *progress;
     __weak MinecraftResourceDownloadTask *weakSelf = self;
@@ -210,10 +214,9 @@ static const NSUInteger kMCStageIndexVerify = 5;
             return [NSURL fileURLWithPath:path];
         }
         progress = [weakSelf.manager downloadProgressForTask:task];
-        if (!size && task) {
-            [weakSelf addDownloadTaskToProgress:task size:response.expectedContentLength];
-            [weakSelf.fileList addObject:name];
-        }
+        // ★ [LAUNCH-AFTER-DL] 该文件的进度单位已在下方 createDownloadTask 尾部【无条件】预留，
+        //   此处不再重复挂载（旧代码只在 !size 时挂载 ⇒ 未知大小文件不计数 ⇒ 父 progress
+        //   被当作已 finished ⇒ 启动端在文件仍在下载时就启动 ⇒ 报缺件）。
         [NSFileManager.defaultManager createDirectoryAtPath:path.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
         [NSFileManager.defaultManager removeItemAtPath:path error:nil];
         return [NSURL fileURLWithPath:path];
@@ -225,6 +228,13 @@ static const NSUInteger kMCStageIndexVerify = 5;
             if (retryCount + 1 < attemptCount) {
                 NSInteger nextRetry = retryCount + 1;
                 NSLog(@"[MCDL] Retrying %@ (attempt %ld/%ld)", name, (long)(nextRetry + 1), (long)attemptCount);
+
+                // ★ [LAUNCH-AFTER-DL] 本次尝试失败：先把它的子进度推到终态，避免重试后父进度被
+                //   “卡住的旧子进度”永久挂住（progress 永不 finished ⇒ 启动端永远等不到下载完成）。
+                NSProgress *failedProgress = progress ?: [weakSelf.manager downloadProgressForTask:task];
+                if (failedProgress && failedProgress.totalUnitCount > failedProgress.completedUnitCount) {
+                    failedProgress.completedUnitCount = failedProgress.totalUnitCount;
+                }
 
                 if (weakSelf.retryCallback) {
                     dispatch_async(dispatch_get_main_queue(), ^{
@@ -306,7 +316,12 @@ static const NSUInteger kMCStageIndexVerify = 5;
         }
     }];
 
-    if (size && task) {
+    // ★ [LAUNCH-AFTER-DL] 无条件为每个已创建的下载任务预留进度单位（未知大小按 1 计，
+    //   见 addDownloadTaskToProgress:size:）。旧代码只在 size>0 时预留 ⇒ 全是未知大小文件时
+    //   父 progress.totalUnitCount 会被减到 0 并走“无待下载”快速完成路径 ⇒ 启动端 KVO 误判
+    //   finished ⇒ 带着仍在下载的文件启动 ⇒ 报缺件。预留单位让父 progress 只有在所有子任务
+    //   真正完成后才 finished。
+    if (task) {
         [self addDownloadTaskToProgress:task size:size];
         [self.fileList addObject:name];
     }
@@ -453,7 +468,17 @@ static const NSUInteger kMCStageIndexVerify = 5;
             }
             artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
             artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
-            artifact[@"sha1"] = library[@"checksums"][0];
+            // ★ [PREDL] Fabric/Quilt 的 meta profile 库条目【没有 downloads 块】，只有顶层
+            //   sha1/size（如 org.ow2.asm:asm:9.7.1、net.fabricmc:sponge-mixin）。
+            //   旧代码只读 library[checksums][0] ⇒ 生成的伪 artifact 丢 SHA1/长度：
+            //     1) 下载无完整性校验、截断不被发现；
+            //     2) 每次启动刷 “Warning: couldn't find SHA … have to assume it's good.”。
+            //   这里补读顶层 sha1/size；缺则保持 nil（仍走“仅存在性”兜底 —— intermediary /
+            //   fabric-loader 在 meta 里确实不带 sha1，无法校验）。
+            artifact[@"sha1"] = library[@"checksums"][0] ?: library[@"sha1"];
+            if (artifact[@"size"] == nil && library[@"size"] != nil) {
+                artifact[@"size"] = library[@"size"];
+            }
         }
 
         NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
@@ -516,7 +541,13 @@ static const NSUInteger kMCStageIndexVerify = 5;
 
 - (void)downloadVersion:(NSDictionary *)version {
     self.currentVersionId = version[@"id"];
-    self.stageReportingEnabled = YES;
+    // ★ [LAUNCH-AFTER-DL] 阶段表必须先于「阶段上报」观察者就位：
+    //   prepareForDownload 里的 addObserver(NSKeyValueObservingOptionInitial) 会【同步】
+    //   回调一次 observeValueForKeyPath；若此刻 stageReportingEnabled=YES，就会对【还空着】
+    //   的 stages 调 stageAtIndex:kMCStageIndexLibraries(3)/Assets(4) ⇒ 每次下载都刷
+    //     [DownloadTaskManager] …rate: invalid stage index 3/4 …
+    //   （即“任务阶段表与调用 index 不对齐”）。故先关上报、装好 6 步表再打开。
+    self.stageReportingEnabled = NO;
     [self prepareForDownload];
 
     // ===== 阶段上报初始化（redesign-download-ui Phase 3 Task 3.1）=====
@@ -525,6 +556,7 @@ static const NSUInteger kMCStageIndexVerify = 5;
     NSString *taskId = self.currentDownloadTaskItem.taskId;
     [manager setTaskWithId:taskId stages:PLTaskStagesVanilla()];
     self.currentDownloadTaskItem.autoPresentDetail = YES;
+    self.stageReportingEnabled = YES;   // ★ [LAUNCH-AFTER-DL] 阶段表已就位 ⇒ 现在才允许上报
     // 阶段0 版本清单：版本对象由调用方（版本列表/预装流程）解析提供，直接标记完成
     [manager updateTaskWithId:taskId stageAtIndex:kMCStageIndexFetchManifest status:PLTaskStageStatusCompleted];
     // ★ [158-FIX] 阶段2「下载客户端」不再无条件标 Skipped。
@@ -587,6 +619,156 @@ static const NSUInteger kMCStageIndexVerify = 5;
             }
         }];
     }];
+}
+
+#pragma mark - ★ [PREDL] 安装期预补齐（把「启动时现补」前移到安装/下载时）
+
+/// 安装期“一次装全”：对刚写入的实例（Fabric/Quilt profile）执行完整的 库/资源/client.jar 补齐。
+/// 详见头文件说明。核心点：复用启动期同款逻辑、不注册 DownloadTaskManager 任务、
+/// 有界轮询等待（30 分钟）。
+- (void)prefillVersionResources:(NSDictionary *)version
+                     completion:(void (^)(BOOL, NSError * _Nullable))completion {
+    // 不注册任务：stageReportingEnabled=NO + currentDownloadTaskItem=nil
+    // ⇒ prepareForDownload 里的 registerOrUpdateTaskItem 不会被触发（本方法不调用它）。
+    self.stageReportingEnabled = NO;
+    self.currentDownloadTaskItem = nil;
+    self.currentVersionId = version[@"id"];
+    // 防御：metadata 错误路径会调用 handleError()，nil block 调用必崩 ⇒ 置空 block
+    if (self.handleError == nil) self.handleError = ^{};
+
+    // 自建 progress（不调用 prepareForDownload，避免注册 DownloadTaskManager 任务）
+    self.textProgress = [NSProgress new];
+    self.textProgress.kind = NSProgressKindFile;
+    self.textProgress.fileOperationKind = NSProgressFileOperationKindDownloading;
+    self.textProgress.totalUnitCount = -1;
+    self.progress = [NSProgress new];
+    self.progress.totalUnitCount = 1;   // 预留 1 字节，避免提前 finished
+    [self.fileList removeAllObjects];
+    [self.progressList removeAllObjects];
+    [self.failedFiles removeAllObjects];
+    self.libTotalFileCount = 0; self.libCompletedFileCount = 0;
+    self.assetTotalFileCount = 0; self.assetCompletedFileCount = 0;
+
+    NSString *vid = self.currentVersionId ?: @"?";
+    NSLog(@"[MCDL][PREDL] 预补齐开始：实例 '%@'（安装期一次装全，避免首次启动现补）", vid);
+
+    __weak MinecraftResourceDownloadTask *weakSelf = self;
+    void (^finish)(BOOL, NSError *) = ^(BOOL ok, NSError *e) {
+        if (completion) completion(ok, e);
+    };
+
+    // ★ [PREDL] 本地解析（不经 remoteVersionList）：若走 downloadVersionMetadata:，当父版本
+    //   能在远程清单里命中时它会把 path 改写成【父 JSON】⇒ 子版本(加载器)的 libraries 被丢弃
+    //   ⇒ 预补齐会漏下加载器库（假“已完成”）。这里直接读刚写入的 profile JSON 并在本地合并，
+    //   确定性拿到与启动期一致的 metadata。
+    NSError *resolveError = nil;
+    NSMutableDictionary *resolved = [MinecraftResourceDownloadTask prefill_resolveLocalMetadataForVersion:version
+                                                                                                    error:&resolveError];
+    if (resolved == nil) {
+        NSLog(@"[MCDL][PREDL] 预补齐失败：无法本地解析实例 '%@'：%@", vid, resolveError.localizedDescription);
+        finish(NO, resolveError);
+        return;
+    }
+    self.metadata = resolved;
+
+    [self downloadAssetMetadataWithSuccess:^{
+            __strong MinecraftResourceDownloadTask *s2 = weakSelf;
+            if (!s2) return;
+            NSArray *libTasks = [s2 downloadClientLibraries];
+            NSArray *assetTasks = [s2 downloadClientAssets];
+            NSMutableArray *all = [NSMutableArray array];
+            if (libTasks) [all addObjectsFromArray:libTasks];
+            if (assetTasks) [all addObjectsFromArray:assetTasks];
+            // 丢弃预留的 1 字节（与 downloadVersion: 同口径）
+            if (s2.progress.totalUnitCount > 0) {
+                s2.progress.totalUnitCount--;
+                s2.textProgress.totalUnitCount--;
+            }
+            if (all.count == 0) {
+                NSLog(@"[MCDL][PREDL] 预补齐完成：实例 '%@' 无需下载（库/资源/client.jar 均已就绪）", vid);
+                finish(YES, nil);
+                return;
+            }
+            NSLog(@"[MCDL][PREDL] 预补齐：实例 '%@' 安装期下载 %lu 个文件（库/资源/client.jar）",
+                  vid, (unsigned long)all.count);
+            [all makeObjectsPerformSelector:@selector(resume)];
+            // 有界轮询等待（最长 30 分钟；与 AiAssetTools/DownloadViewController 的轮询同口径）
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30 * 60];
+                while (!s2.progress.finished && !s2.progress.cancelled && [deadline timeIntervalSinceNow] > 0) {
+                    [NSThread sleepForTimeInterval:0.2];
+                }
+                NSArray<NSDictionary *> *failed = [s2.failedFiles copy];
+                BOOL cancelled = s2.progress.cancelled;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (cancelled) {
+                        finish(NO, [NSError errorWithDomain:@"MinecraftResourcePrefill" code:-999
+                                                   userInfo:@{NSLocalizedDescriptionKey: @"prefill cancelled"}]);
+                        return;
+                    }
+                    if (failed.count > 0) {
+                        NSMutableString *msg = [NSMutableString stringWithFormat:@"预补齐仍有 %lu 个文件未完成：",
+                                                (unsigned long)failed.count];
+                        for (NSDictionary *f in failed) {
+                            [msg appendFormat:@"\n  • %@ (%@)", f[@"name"], f[@"error"]];
+                        }
+                        NSLog(@"[MCDL][PREDL] %@", msg);
+                        finish(NO, [NSError errorWithDomain:@"MinecraftResourcePrefill" code:2
+                                                   userInfo:@{NSLocalizedDescriptionKey: [msg copy]}]);
+                    } else {
+                        NSLog(@"[MCDL][PREDL] 预补齐完成：实例 '%@' 已装全，可离线启动", vid);
+                        finish(YES, nil);
+                    }
+                });
+            });
+    }];
+}
+
+// ★ [PREDL] 本地解析实例 profile → 合并 inheritsFrom 父版本 → tweakVersionJson（全程不联网）。
+//   与 downloadVersion: 完成后 completionBlock 的合并逻辑一致，但【不依赖 remoteVersionList】，
+//   避免父版本命中远程清单时 path 被改写成父 JSON 而丢失子版本(加载器) libraries。
+//   返回合并后的 metadata（含子版本 libraries）；失败返回 nil 并给出 error。
++ (NSMutableDictionary *)prefill_resolveLocalMetadataForVersion:(NSDictionary *)version
+                                                         error:(NSError **)error {
+    const char *env = getenv("POJAV_GAME_DIR");
+    if (env == NULL || strlen(env) == 0) {
+        if (error) *error = [NSError errorWithDomain:@"MinecraftResourcePrefill" code:10
+                                            userInfo:@{NSLocalizedDescriptionKey: @"POJAV_GAME_DIR 未设置"}];
+        return nil;
+    }
+    NSString *gameDir = [NSString stringWithUTF8String:env];
+    NSString *vid = [version[@"id"] isKindOfClass:[NSString class]] ? version[@"id"] : nil;
+    if (vid.length == 0) {
+        if (error) *error = [NSError errorWithDomain:@"MinecraftResourcePrefill" code:11
+                                            userInfo:@{NSLocalizedDescriptionKey: @"实例缺少 id"}];
+        return nil;
+    }
+    NSString *path = [gameDir stringByAppendingPathComponent:
+                      [NSString stringWithFormat:@"versions/%@/%@.json", vid, vid]];
+    NSMutableDictionary *json = parseJSONFromFile(path);
+    if (json == nil || json[@"NSErrorObject"]) {
+        if (error) *error = [NSError errorWithDomain:@"MinecraftResourcePrefill" code:12
+                                            userInfo:@{NSLocalizedDescriptionKey:
+                                                           [NSString stringWithFormat:@"版本 JSON 缺失或损坏：%@", path]}];
+        return nil;
+    }
+    if (json[@"inheritsFrom"]) {
+        NSString *parent = json[@"inheritsFrom"];
+        NSString *ppath = [gameDir stringByAppendingPathComponent:
+                           [NSString stringWithFormat:@"versions/%@/%@.json", parent, parent]];
+        NSMutableDictionary *parentJson = parseJSONFromFile(ppath);
+        if (parentJson == nil || parentJson[@"NSErrorObject"]) {
+            if (error) *error = [NSError errorWithDomain:@"MinecraftResourcePrefill" code:13
+                                                userInfo:@{NSLocalizedDescriptionKey:
+                                                               [NSString stringWithFormat:@"父版本 JSON 缺失或损坏：%@", ppath]}];
+            return nil;
+        }
+        [MinecraftResourceUtils processVersion:json inheritsFrom:parentJson];
+        [MinecraftResourceUtils tweakVersionJson:parentJson];
+        return parentJson;
+    }
+    [MinecraftResourceUtils tweakVersionJson:json];
+    return json;
 }
 
 #pragma mark - Modpack installation
@@ -948,8 +1130,8 @@ static const NSUInteger kMCStageIndexVerify = 5;
                         speed:speed
        estimatedTimeRemaining:eta];
 
-    // 阶段上报：并发下载的库/资源阶段共享全局速率（progress 为不确定模式，靠文件计数推进）
-    if (self.stageReportingEnabled) {
+    // ★ [LAUNCH-AFTER-DL] 边界防御：阶段表未装好/更短时不得越界上报（否则刷 invalid stage index）。
+    if (self.stageReportingEnabled && self.currentDownloadTaskItem.stages.count > kMCStageIndexAssets) {
         [manager updateTaskWithId:self.currentDownloadTaskItem.taskId
                     stageAtIndex:kMCStageIndexLibraries
                             rate:speed];

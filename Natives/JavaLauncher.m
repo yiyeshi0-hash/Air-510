@@ -581,6 +581,13 @@ static NSString *ameJITCacheLogPreLaunch(const char *where) {
                   getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
         }
     }
+    // ★ [JIT-STATUS] 与状态栏/UI 门禁同源的三态判据 + 环境，写进主日志：
+    //   可在 latestlog.txt 里直接 grep 到"为何不能用 JIT / 本次实际可用性"。
+    NSString *ameJitWhy = nil;
+    AMEJITUsability ameJitU = AMEJITCurrentUsability(&ameJitWhy, NULL);
+    NSLog(@"[JIT-STATUS] [%s] usability=%ld env=%@ %@", w, (long)ameJitU,
+          AMEJITEnvironmentName(AMEJITEnvironmentKind()), ameJitWhy ?: @"-");
+
     // ★ [JIT-EXEC-2] 权威闸门：返回非 nil ⇒ 调用方中止启动（逃生开关见 utils.h）。
     return ameExec2Why;
 }
@@ -1659,8 +1666,22 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
         if ([renderer isEqualToString:@ RENDERER_NAME_VIRGL]) {
             NSLog(@"[JavaLauncher] [RENDERER-GAP] VirGL renderer active: GALLIUM_DRIVER=virgl + in-process vtest server");
         }
-        // ★ [DROP-NGG4ES] 原 NG-GL4ES 专属处理（NGG_DIR_PATH 指向 POJAV_HOME/ngg）
-        //   已随该支移除；VirGL 等其余 gap 渲染器处理原样保留。
+        // NG-GL4ES（"Krypton Wrapper"，ZL2 同款 gl4es）。NGG_DIR_PATH 指向
+        // POJAV_HOME 下的 ngg/（上游默认 /sdcard/NGG 在 iOS 必然 fopen 失败——
+        // config_refresh 对缺失文件静默返回，无 config.json 时行为与默认完全
+        // 一致；指到可写目录只是让高级用户可以放 config.json 调参）。
+        // 其余零环境需求：EGL 由宿主 gl_bridge 提供（egl_bridge 的 gl4es 家族分支
+        // 零 EGL 动作），dylib 由 LWJGL 作为 opengl.libname 加载。
+        if ([renderer isEqualToString:@ RENDERER_NAME_NGGL4ES]) {
+            const char *ngg_home = getenv("POJAV_HOME");
+            if (ngg_home && *ngg_home) {
+                char ngg_path[1024];
+                snprintf(ngg_path, sizeof(ngg_path), "%s/ngg", ngg_home);
+                setenv("NGG_DIR_PATH", ngg_path, 1);
+            }
+            NSLog(@"[JavaLauncher] NG-GL4ES renderer active (NGG_DIR_PATH=%s)",
+                  getenv("NGG_DIR_PATH") ?: "<unset>");
+        }
 
         // Apply MobileGL-specific environment variables
         // MobileGL（MobileGL-Dev，LGPL-3.0）两个变体共用同一个 libMobileGL.dylib 二进制，
@@ -2017,64 +2038,79 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
     PUSH_MARGV_LITERAL("-Dlog4j2.formatMsgNoLookups=true");
 
     // ============================================================================
-    // JNA 加载路径
+    // JNA 加载路径（★ [JNA-INBUNDLE]：只从 App 包内加载，永不解包到数据目录）
     // ============================================================================
-    // ★ [JNA-FIX] JNA 必须用上**包内预签名的 iOS 平台** libjnidispatch.jnilib。
-    //   失败模式（本机 iPad 8 / iPadOS 17.2 复现）：JNA 5.13 的
-    //   Native.loadNativeDispatchLibrary() 在 -Djna.boot.library.path 下按
-    //      new File(dir, mapLibraryName("jnidispatch").replace(".dylib",".jnilib"))
-    //      = <dir>/libjnidispatch.jnilib                       (Native.java:960)
-    //   查找并 System.load；**该分支的 UnsatisfiedLinkError 被静默吞掉**
-    //   （:971-975，第 974 行的打印被注释掉）⇒ 文件缺失或加载失败都不会报，
-    //   它会继续走到 loadNativeDispatchLibraryFromClasspath()（:1015）：
-    //   从 jna-5.13.0.jar 解包 com/sun/jna/darwin-aarch64/libjnidispatch.jnilib
-    //   —— 那是 **platform=MACOS** 的镜像，iOS dyld 报
-    //     dlopen(...) (code signature invalid in <C34856C0-A4B7-32C6-9ACE-D2166123DD04>)
-    //   ⇒ UnsatisfiedLinkError → Native.<clinit> → NoClassDefFoundError
-    //     (com.sun.jna.Native / com.sun.jna.platform.mac.SystemB) 连锁。
-    //   这里做三件事（全部低风险，任何一步失败都回退到原有行为）：
-    //     (1) 把包内预签名件复制一份到可写目录 <POJAV_HOME>/jna/（拷贝不改字节
-    //         ⇒ 原 ad-hoc 签名保持有效），并把该目录放到 boot.library.path 最前；
-    //     (2) 保留 Frameworks 作为第二查找目录（原行为）；
-    //     (3) 打开 jna.debug_load.jna，让 JNA 自己打判据行
-    //         "Found jnidispatch at <路径>"（Native.java:969/994/1047）。
-    //   注：该文件若落在 HOME 下，main_hook.m 会调 PLPatchMachOPlatformForFile，
-    //   但它对**已是 iOS 平台**的 Mach-O 走 `buildver->platform == activePlatform`
-    //   提前 return NO（dyld_patch_platform.m:29）⇒ 不改字节、不动签名。
-    const char *jnaHomeC = getenv("POJAV_HOME");
-    NSString *jnaPojavHome = jnaHomeC ? [NSString stringWithUTF8String:jnaHomeC] : nil;
-    NSString *jnaBundleLib = [frameworksPath stringByAppendingPathComponent:@"libjnidispatch.jnilib"];
-    NSFileManager *jnaFM = [NSFileManager defaultManager];
-    BOOL jnaInBundle = [jnaFM fileExistsAtPath:jnaBundleLib];
-    NSString *jnaWritableDir = nil;
-    NSString *jnaWritableLib = nil;
-    if (jnaPojavHome.length > 0) {
-        jnaWritableDir = [jnaPojavHome stringByAppendingPathComponent:@"jna"];
-        jnaWritableLib = [jnaWritableDir stringByAppendingPathComponent:@"libjnidispatch.jnilib"];
-        [jnaFM createDirectoryAtPath:jnaWritableDir withIntermediateDirectories:YES attributes:nil error:NULL];
-        if (jnaInBundle && ![jnaFM fileExistsAtPath:jnaWritableLib]) {
-            // 只在缺失时落一份（不覆盖，避免每次启动都写）。
-            NSError *jnaCopyErr = nil;
-            if (![jnaFM copyItemAtPath:jnaBundleLib toPath:jnaWritableLib error:&jnaCopyErr]) {
-                NSLog(@"[JNA-FIX] copy to writable dir failed (fallback to bundle): %@", jnaCopyErr.localizedDescription);
-                jnaWritableLib = nil;
+    //   机理（对照 JNA 5.13.0 源码 com/sun/jna/Native.java#loadNativeDispatchLibrary）：
+    //     (1) 遍历 -Djna.boot.library.path 每个目录，取
+    //           mapLibraryName("jnidispatch").replace(".dylib",".jnilib")
+    //           = "libjnidispatch.jnilib"；存在即 System.load(path)。
+    //         ★ 该分支抛出的 UnsatisfiedLinkError 被【静默吞掉】(catch{} 空体)！
+    //     (2) -Djna.nosys：只有显式 != "true" 才走 System.loadLibrary(java.library.path)。
+    //         注意 5.13 里该属性【默认就是 "true"】——此处仍显式写死，防上游默认回摆。
+    //     (3) if (!Boolean.getBoolean("jna.noclasspath")) loadNativeDispatchLibraryFromClasspath()
+    //           —— 从 jna-5.13.0.jar 解包 com/sun/jna/darwin-aarch64/libjnidispatch.jnilib
+    //              到 <jna.tmpdir>/jnaNNN.tmp 再 System.load。
+    //     ★ 真正能阻止 (3) 解包的是 jna.noclasspath（不是文档里那个 jna.nounpack ——
+    //       nounpack 在 5.13 里只用于跳过旧 tmp 清扫，并不阻止解包；两个都设置以防语义差异）。
+    //
+    //   ★ 用户侧"侧载/重签安装一启动就崩"的根因：
+    //     用户用 AltStore/SideStore/esign/TrollStore 装包时是【整包重签】，只会重签
+    //     App 包内的二进制。而旧实现把库复制到【数据目录】<POJAV_HOME>/jna/，或让 JNA
+    //     按 MC 版本 JSON 的 -Djna.tmpdir=${natives_directory}/jna 解包到
+    //       .../instances/<实例>/natives/jna/jnaNNN.tmp。
+    //     这些数据目录里的副本带着【我们构建时】的签名，与重签后的 App 团队不一致 ⇒
+    //     内核拒载 (code signature invalid) ⇒ 静默回退到 (3) 解包 macOS 平台镜像 ⇒
+    //     UnsatisfiedLinkError → Native.<clinit> → NoClassDefFoundError
+    //     (com.sun.jna.Native / com.sun.jna.platform.mac.SystemB) 连锁崩。
+    //     ★ 数据目录跨重装保留（这正是侧载更新的意义）⇒ 旧签名副本会长期"毒化"新安装。
+    //
+    //   修复：boot.library.path 只给【包内 Frameworks】（它随包一起被重签，签名必然
+    //   与 App 一致），并关掉 (2)(3) 两条回退 —— 任何异常都【响亮失败】，而不是偷偷
+    //   从 jar 解出 mac 平台镜像。MC 注入的 -Djna.tmpdir 于是不再有任何解包目标。
+    //   注：该 .jnilib 是 iOS 平台 Mach-O（platform=IOS，随包签名），不会被
+    //   main_hook.m 的 PLPatchMachOPlatformForFile 改字节（对已是 iOS 平台者提前 NO）。
+    NSString *jnaBundleDir = frameworksPath;   // <App>/Frameworks（随包被重签）
+    NSString *jnaBundleLib = [jnaBundleDir stringByAppendingPathComponent:@"libjnidispatch.jnilib"];
+    BOOL jnaInBundle = [[NSFileManager defaultManager] fileExistsAtPath:jnaBundleLib];
+    NSLog(@"[JNA-INBUNDLE] libjnidispatch bundle=%@ path=%@ boot.library.path=%@ (nosys=1 noclasspath=1 nounpack=1)",
+          jnaInBundle ? @"present" : @"MISSING", jnaBundleLib, jnaBundleDir);
+    PUSH_MARGV_FORMAT(@"-Djna.boot.library.path=%@", jnaBundleDir);
+    PUSH_MARGV_LITERAL("-Djna.nosys=true");        // ★ 不查系统库路径
+    PUSH_MARGV_LITERAL("-Djna.noclasspath=true");  // ★ 真正阻止从 jar 解包（5.13 的闸门）
+    PUSH_MARGV_LITERAL("-Djna.nounpack=true");     // 文档同义词 + 关闭 JNA 自带 tmp 清扫
+    // ★ 判据行来源：命中包内库时 JNA 会打 "Found jnidispatch at <包内路径>"。
+    PUSH_MARGV_LITERAL("-Djna.debug_load.jna=true");
+
+    // —— 旧残留清理（[JNA-INBUNDLE]）：数据目录里的历史副本/解包件已不在任何加载
+    //    路径上（boot.library.path 现在只指包内），顺手清掉，避免"旧签名的 jnidispatch"
+    //    长期留在沙盒里误导排查。纯尽力而为，失败不影响启动。
+    {
+        NSFileManager *jnaFM = [NSFileManager defaultManager];
+        const char *jnaHomeC = getenv("POJAV_HOME");
+        if (jnaHomeC) {
+            // 旧实现落在这里的那份可写副本（曾排在 boot path 首位）。
+            NSString *jnaLegacyDir = [@(jnaHomeC) stringByAppendingPathComponent:@"jna"];
+            if ([jnaFM fileExistsAtPath:jnaLegacyDir]) {
+                if ([jnaFM removeItemAtPath:jnaLegacyDir error:NULL]) {
+                    NSLog(@"[JNA-INBUNDLE] removed legacy writable copy dir: %@", jnaLegacyDir);
+                } else {
+                    NSLog(@"[JNA-INBUNDLE] legacy dir present but not removable (ignored): %@", jnaLegacyDir);
+                }
             }
-        } else if (![jnaFM fileExistsAtPath:jnaWritableLib]) {
-            jnaWritableLib = nil;   // 包内也没有、之前也没落过 ⇒ 无可写副本
+        }
+        const char *jnaGameC = getenv("POJAV_GAME_DIR");
+        if (jnaGameC) {
+            // MC 的 -Djna.tmpdir=${natives_directory}/jna 曾把解包件落在这里。
+            NSString *jnaTmpDir = [[@(jnaGameC) stringByAppendingPathComponent:@"natives"]
+                                    stringByAppendingPathComponent:@"jna"];
+            for (NSString *f in [jnaFM contentsOfDirectoryAtPath:jnaTmpDir error:NULL]) {
+                if ([f hasPrefix:@"jna"] && [f hasSuffix:@".tmp"]) {
+                    [jnaFM removeItemAtPath:[jnaTmpDir stringByAppendingPathComponent:f] error:NULL];
+                    NSLog(@"[JNA-INBUNDLE] removed stale unpack residue: %@/%@", jnaTmpDir, f);
+                }
+            }
         }
     }
-    NSString *jnaBootPath = frameworksPath;
-    if (jnaWritableLib.length > 0 && jnaWritableDir.length > 0) {
-        // 可写目录优先：JNA 逐目录试探，第一个能 System.load 的生效，失败自动继续。
-        jnaBootPath = [NSString stringWithFormat:@"%@:%@", jnaWritableDir, frameworksPath];
-    }
-    NSLog(@"[JNA-FIX] jnidispatch probe: bundle=%@ writable=%@ boot.library.path=%@",
-          jnaInBundle ? @"present" : @"MISSING",
-          jnaWritableLib ? @"present" : @"absent",
-          jnaBootPath);
-    PUSH_MARGV_FORMAT(@"-Djna.boot.library.path=%@", jnaBootPath);
-    // ★ [JNA-FIX] 判据行：命中时 JNA 会打 "Found jnidispatch at <path>"。
-    PUSH_MARGV_LITERAL("-Djna.debug_load.jna=true");
 
     // ============================================================================
     // 帧率解锁第四层：JVM 系统属性
@@ -2719,6 +2755,10 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
     NSString *ameExec2Block = ameJITCacheLogPreLaunch("launchJVM");
     if (ameExec2Block != nil) {
         NSLog(@"[JIT-EXEC-2] [launchJVM] ABORTING launch (would SIGBUS in JIT code): %@", ameExec2Block);
+        // ★ [JIT-NOLOG] 把"为何阻止启动 + 走哪条路"落进可导出的崩溃日志，
+        //   保证即使没有真崩溃、用户也能导出非空的 native-crash.log 自证。
+        AMEJITAppendCrashNote([NSString stringWithFormat:
+            @"[JIT-STATUS] [launchJVM] ABORTED (would SIGBUS in JIT code): %@", ameExec2Block]);
         dispatch_async(dispatch_get_main_queue(), ^{
             showDialog(localize(@"Error", nil),
                 [NSString stringWithFormat:@"JIT 未真正开启：%@\n\n请用 StikDebug / SideStore / TrollStore 等方式为 Amethyst 开启 JIT 后重试（或设置 debug.jit_path=debugger）。",
@@ -3409,6 +3449,8 @@ int launchHeadlessJVM(NSString *mainClass, NSArray<NSString *> *args, int minJav
     if (ameExec2BlockHeadless != nil) {
         NSLog(@"[JIT-EXEC-2] [launchHeadlessJVM] ABORTING headless launch (would SIGBUS in JIT code): %@",
               ameExec2BlockHeadless);
+        AMEJITAppendCrashNote([NSString stringWithFormat:
+            @"[JIT-STATUS] [launchHeadlessJVM] ABORTED (would SIGBUS in JIT code): %@", ameExec2BlockHeadless]);
         return 1;
     }
 

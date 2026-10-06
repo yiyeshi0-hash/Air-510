@@ -1,0 +1,28 @@
+{
+  "announcements": [
+    {
+      "id": "welcome-2026-10",
+      "title": "欢迎使用 Air",
+      "date": "2026-10-06",
+      "summary": "启动器公告已改为本仓库托管，本文件离线随包，网络不可达时仍可显示。",
+      "content": "启动器公告数据源已迁移到本仓库的 `announcements.json`：\n\n- 主源：raw.githubusercontent.com\n- 镜像：jsDelivr CDN\n- 兜底：本文件（随包离线）\n\n此条为离线兜底种子公告，可在仓库根目录的 `announcements.json` 中维护正式公告。",
+      "priority": "normal",
+      "pin": true,
+      "action_url": "",
+      "action_title": "",
+      "image_url": ""
+    },
+    {
+      "id": "seed-2026-10",
+      "title": "公告托管说明",
+      "date": "2026-10-06",
+      "summary": "维护者可通过编辑仓库根目录 announcements.json 发布公告。",
+      "content": "字段：`id` / `title` / `date`(ISO) / `summary` / `content`(Markdown) / `priority`(high|normal|low) / `pin`(true 置顶) / `action_url` / `action_title` / `image_url`。",
+      "priority": "low",
+      "pin": false,
+      "action_url": "",
+      "action_title": "",
+      "image_url": ""
+    }
+  ]
+}

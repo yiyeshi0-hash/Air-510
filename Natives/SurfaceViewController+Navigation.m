@@ -283,9 +283,11 @@ static const void *kMenuDimViewKey = &kMenuDimViewKey;
 /// FCL 风格：打开/关闭游戏内键盘（对应 FCL open_quick_input / ZL2 input_method）
 - (void)actionToggleKeyboard {
     if (self.inputTextField.isFirstResponder) {
+        NSLog(@"[HWKBD-IME] menu toggle: keyboard OFF -> resign IME host");
         [self.inputTextField resignFirstResponder];
         self.inputTextField.alpha = 1.0f;
     } else {
+        NSLog(@"[HWKBD-IME] menu toggle: keyboard ON -> becomeFirstResponder (system IME now drives text input)");
         [self.inputTextField becomeFirstResponder];
         self.inputTextField.text = @" ";
     }

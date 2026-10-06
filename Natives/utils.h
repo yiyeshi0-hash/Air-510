@@ -49,13 +49,11 @@
 //   - Fragment shader 编译失败时忽略错误，让 BSL/Mellow 等光影包能运行
 #define RENDERER_NAME_LTW "libltw.dylib"
 
-// ★ [RENDERER-GAP] 以下三个渲染器常量来自队友仓库
-//   Gsjsjzhznsz/Air-Minecraft-iOS-Launcher（同一项目家族的更晚 fork，Task173/211/215）。
+// ★ [RENDERER-GAP] 以下渲染器常量来自队友仓库
+//   Gsjsjzhznsz/Air-Minecraft-iOS-Launcher（同一项目家族的更晚 fork，Task173/206/211/215）。
 //   本树原先没有这些常量/候选，故按"他们有我们没有"整批抄入。全部为【纯追加】：
-//   对应 dylib 未随包（由 Makefile dep_* / CMake 目标从 vendored 源码构建），
-//   LauncherPreferences 的存在性过滤会隐藏它们 —— 现有渲染器行为零变化。
+//   对应 dylib 由 Makefile dep_* / CMake 目标从 vendored 源码构建。
 //   dylib 与 lwjgl 装载名配对见报告 D:\CTF\_RENDERER_GAP_REPORT.md。
-// ★ [DROP-NGG4ES] 原第四支 NG-GL4ES（Task206）已整支移除（竞争对手源码，不取）。
 
 // VGPU（PojavLauncherTeam/VGPU，gl4es 分支 + 强化着色器语法转换；旧版 MC <1.13 生态）。
 // 源码 vendored 于 Natives/external/vgpu（Task173 iOS 移植补丁），由 CMake 目标 vgpu 构建。
@@ -66,8 +64,12 @@
 // 桥接源码 Natives/ctxbridges/virgl_server.m（引导 vtest 服务端）。
 #define RENDERER_NAME_VIRGL "libOSMesaVirgl.dylib"
 
-// ★ [DROP-NGG4ES] 此处原为 RENDERER_NAME_NGGL4ES "libnggl4es.dylib"（ThirdParty/ZalithLauncher2/
-//   Krypton Wrapper），已连同其构建目标/候选表项/引导分支一并移除。
+// NG-GL4ES（"Krypton Wrapper"，BZLZHH/NG-GL4ES）—— ZalithLauncher 2 用的 gl4es 分支：
+// 能处理更高级的着色器、几乎全 MC 版本可跑（glslang + SPIRV-Cross 着色器管线）。
+// 与 holy gl4es 不同，它自带 ARB 着色器转译管线；EGL 仍由宿主 ANGLE 提供
+// （dylib 只做 GL 转译，零 EGL 动作）。源码 vendored 于 ThirdParty/NG-GL4ES，
+// Makefile dep_nggl4es 构建；别名表脚本 scripts/task206_gen_nggl4es_aliases.py。
+#define RENDERER_NAME_NGGL4ES "libnggl4es.dylib"
 
 // GL4ESZL2（PojavLauncherTeam/gl4es_extra_extra）—— ZL2 经典版 "gl4es"：
 // 纯 C 字符串改写式 GLSL→ESSL 转换（shaderconv.c），无 glslang/SPIRV-Cross 依赖。
@@ -144,17 +146,22 @@ static inline bool isDesktopGLRenderer(const char *renderer) {
 
 // ★ [RENDERER-GAP] 新增渲染器的判定谓词（来自队友仓库，纯追加）。
 // gl4es 家族：导出全套桌面 GL API，运行时经 ANGLE/libGLESv2 解析后端。
-// 二者（VGPU / GL4ESZL2）与既有 GL4ES 同链路，共用同一套
+// 三者（VGPU / GL4ESZL2 / NG-GL4ES）与既有 GL4ES 同链路，共用同一套
 // proc_address 解析与 init 时机（见 Natives/ctxbridges/gl4es_family_boot.m）。
 static inline bool isVGPURenderer(const char *renderer) {
     return renderer && !strcmp(renderer, RENDERER_NAME_VGPU);
 }
-// ★ [DROP-NGG4ES] 原 isNGGL4ESRenderer() 谓词已随该支移除。
+// NG-GL4ES（"Krypton Wrapper"）—— gl4es 家族第三支，唯二需要宿主显式
+// initialize_gl4es() 的成员（另一支是 GL4ESZL2）。
+static inline bool isNGGL4ESRenderer(const char *renderer) {
+    return renderer && !strcmp(renderer, RENDERER_NAME_NGGL4ES);
+}
 static inline bool isGL4ESZL2Renderer(const char *renderer) {
     return renderer && !strcmp(renderer, RENDERER_NAME_GL4ESZL2);
 }
 static inline bool isGL4ESFamilyRenderer(const char *renderer) {
-    return isVGPURenderer(renderer) || isGL4ESZL2Renderer(renderer);
+    return isVGPURenderer(renderer) || isGL4ESZL2Renderer(renderer) ||
+           isNGGL4ESRenderer(renderer);
 }
 static inline bool isVirglRenderer(const char *renderer) {
     return renderer && !strcmp(renderer, RENDERER_NAME_VIRGL);
@@ -206,6 +213,64 @@ BOOL AMEJITVerifyWritableJITRegion(void);
 BOOL AMEJITWaitReadyVerified(void);
 // 已通过验证的 JIT 区（未验证过返回 NULL）。
 void *AMEJITVerifiedRegionPtr(void);
+
+// ★ [JIT-STATUS] ============================================================
+// 「JIT 到底能不能用」一律以**本次进程的实际状态**为准，绝不把「设备/安装方式有
+// 能力」当成「本次可用」——巨魔 TrollStore 装机自带 JIT 能力，但用户把 JIT 关掉/
+// 未生效时本进程仍不可用 ⇒ 不得显示"已开启"，也不得直接启动（否则 JVM 首帧 JIT
+// 取指 KERN_PROTECTION_FAILURE/SIGBUS 闪退）。
+//
+// 三态（状态显示 + 启动门禁共用同一判据）：
+//   Unavailable    不可用（没有任何权限/能力信号）
+//   PermissionOnly 权限已给但不保证可用（能力声明在：TrollStore 装机 / 真 JIT
+//                  entitlement / CS_DEBUGGED / no-sandbox / 越狱原生路径，
+//                  但执行式探针未通过）
+//   Verified       可用（执行式探针真的跑过，或调试器服务 brk #0x69 拿到可写 JIT 区）
+typedef NS_ENUM(NSInteger, AMEJITUsability) {
+    AMEJITUsabilityUnavailable    = 0,
+    AMEJITUsabilityPermissionOnly = 1,
+    AMEJITUsabilityVerified       = 2,
+};
+// 判定当前进程 JIT 实际可用性（三态）。whyOut=可读原因（主日志），
+// keyOut=三态对应的 i18n key（UI）。结果短时缓存（1s，见 utils.m）。
+AMEJITUsability AMEJITCurrentUsability(NSString **whyOut, NSString **keyOut);
+// 三态 → 状态栏文案 i18n key。
+NSString *AMEJITUsabilityDisplayKey(AMEJITUsability u);
+// 作废可用性缓存（用户刚开/关 JIT、从外部工具切回前台时调用）。
+void AMEJITInvalidateUsabilityCache(void);
+// 「两型 mapping（匿名私有 + 文件背衬 COW）能否真的执行」的执行式探针（带 2s
+// 限流缓存）。这是"真的试一次 JIT 映射+写入+执行+回读"的判据，显示与门禁共用。
+BOOL AMEJITBothMappingKindsExecutable(void);
+
+// ★ [JIT-ENV] 自动环境识别 + 「必要时主动申请 JIT」流程 -----------------------
+typedef NS_ENUM(NSInteger, AMEJITEnvKind) {
+    AMEJITEnvKindUnknown    = 0,
+    AMEJITEnvKindTrollStore = 1,   // 巨魔（TrollStore 装机）
+    AMEJITEnvKindJailbroken = 2,   // 越狱（Dopamine/palera1n/Taurine/RootHide…）
+    AMEJITEnvKindSideload   = 3,   // 侧载（JIT 需外部工具，如 StikDebug/SideStore）
+    AMEJITEnvKindPlain      = 4,   // 纯签名/无
+};
+// 环境分类（多证据：TrollStore 装机标记 / 越狱多证据 / get-task-allow 等；进程内缓存）。
+AMEJITEnvKind AMEJITEnvironmentKind(void);
+NSString *AMEJITEnvironmentName(AMEJITEnvKind kind);   // "trollstore"/"jailbreak"/"sideload"/"plain"
+typedef NS_ENUM(NSInteger, AMEJITEnsureResult) {
+    AMEJITEnsureResultAlreadyUsable = 0,   // 本次进程本来就带可用 JIT
+    AMEJITEnsureResultNowUsable     = 1,   // 本次申请后变为可用
+    AMEJITEnsureResultNeedsExternal = 2,   // 需用户/外部工具（UI 去走使能器流程）
+    AMEJITEnsureResultFailed        = 3,   // 申请失败（附原因）
+};
+// 环境识别 → (必要时)按环境主动申请 JIT → 复核实际可用性。reasonOut 给可读说明。
+// 日志链路：[JIT-ENV] env=… | jit_at_launch=… ⇒ requesting… → request result=…
+//          → effective=available/unavailable。
+AMEJITEnsureResult AMEJITEnsureJITUsable(NSString **reasonOut);
+
+// ★ [JIT-STATUS] 启动前门禁（UI 快路径用）：nil = 真能力已验证、可直启；
+//   非 nil = 不得直启（附"为何 + 接下来走哪条路"的可读原因）。
+NSString *AMEJITLaunchGateReason(void);
+// ★ [JIT-NOLOG] 把一条 JIT 诊断写入可导出的 native-crash.log（与 [LOG-FIX]/
+//   [VER-ISOLATE] 同路径：实例目录真身 + POJAV_HOME 硬链接，普通文件可被文件
+//   App/分享/AFC 取走）；写入失败时打 [JIT-NOLOG] 主日志，避免"无有效日志"。
+void AMEJITAppendCrashNote(NSString *note);
 // brk #0x69 的 SIGTRAP 安全网包装：无人应答时返回 NULL 而不是致死崩溃，
 // 由调用方走优雅报错路径；调试器正常应答时行为与裸函数完全一致。
 void* JIT26CreateRegionLegacySafe(size_t len);
@@ -707,3 +772,38 @@ BOOL ameVISniffShouldSuggestIsolation(NSString *versionId);
 //    静态证明：哨兵读点唯一（ShouldPresent，只读不写）、写点唯一（MarkDontShowAgain，仅向导按钮调用）。
 BOOL ameVIWizardShouldPresent(void);
 void ameVIWizardMarkDontShowAgain(void);
+
+// ★ [NO-BLOCK] 启动门禁统一判定 ==============================================
+// 目的：从「点启动」到「进游戏」的链路上，只有【渲染器类】的选择/初始化允许阻断；
+// 其余一切前置条件（缺件 / 下载未完成 / JIT / 账号 / 网络 / 版本不匹配 / 向导 /
+// 更新 / 校验 / 磁盘 / 权限 …）都【不得】成为硬门禁 —— 触发时只写一行 [NO-BLOCK]
+// 主日志并照常继续启动。
+//
+// 设计要点（先根因、后安全网）：
+//   1) 这类门禁在【正常设备 + 正常安装】下本就不该触发（根因已在安装期补齐：
+//      [FABRIC-COMPLETE] 安装即装全、[PREDL] 启动前本地校验补齐、库适用性统一判定…）；
+//   2) 本接口是【安全网】：万一仍被触发，绝不把用户挡在门口，只记录、只警示；
+//   3) 渲染器类是唯一例外（用户显式要求保留其决定权）。
+typedef NS_ENUM(NSInteger, AmeLaunchGateKind) {
+    AmeLaunchGateKindRenderer  = 0,   // 渲染器选择/初始化 —— 唯一允许阻断
+    AmeLaunchGateKindDownload  = 1,   // 下载/校验未完成
+    AmeLaunchGateKindJIT       = 2,   // JIT 未就绪
+    AmeLaunchGateKindAccount   = 3,   // 账号/登录
+    AmeLaunchGateKindInstance  = 4,   // 实例/版本缺失或不匹配
+    AmeLaunchGateKindFiles     = 5,   // 缺库/缺资源/缺参数
+    AmeLaunchGateKindNetwork   = 6,   // 网络/源不可达
+    AmeLaunchGateKindDisk      = 7,   // 磁盘/权限
+    AmeLaunchGateKindUpdate    = 8,   // 更新检查/向导等提示
+    AmeLaunchGateKindOther     = 9,
+};
+
+// 该门禁类别是否允许【阻断】启动。仅渲染器类返回 YES，其余一律 NO。
+BOOL AmeLaunchGateMayBlock(AmeLaunchGateKind kind);
+
+// 非渲染器门禁被触发时的统一处理：写一行 [NO-BLOCK] 主日志（含 kind/reason），
+// 返回值恒为 YES（= 继续启动）。调用方应据其返回值走「仍然启动」分支。
+// 渲染器类调用它只记录、不改变语义（调用方自行决定阻断）。
+BOOL AmeLaunchGateNoteNonBlock(NSString *reason, AmeLaunchGateKind kind);
+
+// 门禁类别的可读名（日志/诊断用）。
+NSString *AmeLaunchGateKindName(AmeLaunchGateKind kind);

@@ -893,29 +893,44 @@ static BOOL aiIsLatestAlias(NSString *s) {
             [[NSNotificationCenter defaultCenter] postNotificationName:@"ReloadProfileList" object:nil];
             [manager updateTaskWithId:task.taskId stageAtIndex:jsonStage status:PLTaskStageStatusCompleted];
 
-            // Fabric 自动安装 Fabric API（独立 Mod 下载任务）；Quilt 用 QSL/QFAPI，跳过
-            if (!isQuilt) {
-                [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusRunning];
-                [manager updateTaskWithId:task.taskId currentStageIndex:libsStage];
-                [strongSelf installFabricAPIForGameVersion:mcVersion completion:^(BOOL apiOK, NSString * _Nullable apiMessage) {
-                    if (apiOK) {
-                        [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusCompleted];
-                    } else {
-                        // Fabric API 失败不阻塞加载器安装本身，仅标注阶段失败原因
-                        [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusFailed];
-                        [manager updateTaskWithId:task.taskId stageAtIndex:libsStage progress:0 message:apiMessage];
-                    }
+            // ★ [FABRIC-COMPLETE] 关键补齐：meta profile 的 libraries（fabric-loader / sponge-mixin /
+            //   intermediary / asm* 等）此前【完全没下】，只写了 profile JSON ⇒ 首次启动才现补
+            //   （用户「点了启动才开始下载 / 报缺件」）。这里用【启动期同款】补齐逻辑，在安装阶段
+            //   把库/资源/client.jar 一次装全 ⇒ 离线可启动。
+            [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusRunning];
+            [manager updateTaskWithId:task.taskId currentStageIndex:libsStage];
+
+            MinecraftResourceDownloadTask *prefill = [MinecraftResourceDownloadTask new];
+            prefill.maxRetryCount = 3;
+            prefill.handleError = ^{};
+            [prefill prefillVersionResources:profileJson completion:^(BOOL prefillOK, NSError * _Nullable prefillError) {
+                if (prefillOK) {
+                    [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusCompleted];
+                } else {
+                    [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusFailed];
+                    [manager updateTaskWithId:task.taskId stageAtIndex:libsStage progress:0 message:prefillError.localizedDescription];
+                }
+                // Fabric API 是 mod（非启动必需）：补下但失败不阻塞加载器安装；Quilt 用 QSL/QFAPI，跳过
+                if (!isQuilt) {
+                    [strongSelf installFabricAPIForGameVersion:mcVersion completion:^(BOOL apiOK, NSString * _Nullable apiMessage) {
+                        [manager setTaskWithId:task.taskId completedWithError:nil];
+                        NSString *result;
+                        if (!prefillOK) {
+                            // ★ [FABRIC-COMPLETE] 不静默：明确告知“还差 X，将在首次启动补齐”
+                            result = [NSString stringWithFormat:@"%@ %@ 已安装完成（MC %@），实例已创建并选中；但加载器库未装全，首次启动时将自动补齐。\n%@",
+                                      displayName, resolvedLoaderVersion, mcVersion, prefillError.localizedDescription ?: @""];
+                        } else if (apiOK) {
+                            result = [NSString stringWithFormat:@"%@ %@ 已安装完成（MC %@），并已自动安装 Fabric API，实例已创建并选中。", displayName, resolvedLoaderVersion, mcVersion];
+                        } else {
+                            result = [NSString stringWithFormat:@"%@ %@ 已安装完成（MC %@），实例已创建并选中；但 Fabric API 自动安装失败：%@，可让我重新安装或手动处理。", displayName, resolvedLoaderVersion, mcVersion, apiMessage ?: @"未知原因"];
+                        }
+                        completion(result, nil);
+                    }];
+                } else {
                     [manager setTaskWithId:task.taskId completedWithError:nil];
-                    NSString *result = apiOK
-                        ? [NSString stringWithFormat:@"%@ %@ 已安装完成（MC %@），并已自动安装 Fabric API，实例已创建并选中。", displayName, resolvedLoaderVersion, mcVersion]
-                        : [NSString stringWithFormat:@"%@ %@ 已安装完成（MC %@），实例已创建并选中；但 Fabric API 自动安装失败：%@，可让我重新安装或手动处理。", displayName, resolvedLoaderVersion, mcVersion, apiMessage ?: @"未知原因"];
-                    completion(result, nil);
-                }];
-            } else {
-                [manager updateTaskWithId:task.taskId stageAtIndex:libsStage status:PLTaskStageStatusSkipped];
-                [manager setTaskWithId:task.taskId completedWithError:nil];
-                completion([NSString stringWithFormat:@"Quilt %@ 已安装完成（MC %@），实例已创建并选中。", resolvedLoaderVersion, mcVersion], nil);
-            }
+                    completion([NSString stringWithFormat:@"Quilt %@ 已安装完成（MC %@），实例已创建并选中。", resolvedLoaderVersion, mcVersion], nil);
+                }
+            }];
         }];
     };
 

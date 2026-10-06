@@ -504,13 +504,27 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 - (void)launchMinecraft:(UIButton *)sender {
+    // ★ [NO-BLOCK] 根因：空版本输入框就直接 return（把焦点丢回输入框）—— 用户「点了启动没反应」。
+    //   真修：回退到「当前选中实例」→「列表第一个实例」；确实一个实例都没有才聚焦输入框。
     if (!self.versionTextField.hasText) {
-        [self.versionTextField becomeFirstResponder];
-        return;
+        NSString *fallback = PLProfiles.current.selectedProfileName;
+        if (fallback.length == 0) {
+            fallback = PLProfiles.current.profiles.allKeys.firstObject;
+        }
+        if (fallback.length > 0) {
+            self.versionTextField.text = fallback;
+            PLProfiles.current.selectedProfileName = fallback;
+            AmeLaunchGateNoteNonBlock(@"empty_version_field_fallback_to_selected_profile", AmeLaunchGateKindInstance);
+        } else {
+            [self.versionTextField becomeFirstResponder];
+            return;
+        }
     }
 
     if (BaseAuthenticator.current == nil) {
-        // Present the account selector if none selected
+        // 按需求：无账号【不得】静默 return 把启动挡死 —— 这是「转账号管理」出口，
+        // 登录成功后有自动继续路径（与右栏 pendingLaunchAfterLogin 同源）。
+        NSLog(@"[LAUNCH-GATE] gate=account kind=account ⇒ 转账号选择（非死路）");
         UIViewController *view = [(UINavigationController *)self.splitViewController.viewControllers[0]
         viewControllers][0];
         [view performSelector:@selector(selectAccount:) withObject:sender];
@@ -524,12 +538,28 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [self setInteractionEnabled:NO forDownloading:YES];
 
     NSString *versionId = PLProfiles.current.profiles[self.versionTextField.text][@"lastVersionId"];
-    NSDictionary *object = [remoteVersionList filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
-    if (!object) {
+    if (versionId.length == 0) {
+        // ★ [NO-BLOCK] 防崩 + 真修：某些 profile 未写 lastVersionId（旧直装器/手改）时，
+        //   以输入框里的实例名兜底（本工程惯例 profile 名 == 版本 id），绝不因缺键 nil 进字典崩。
+        versionId = self.versionTextField.text;
+        AmeLaunchGateNoteNonBlock(@"nav_missing_lastVersionId_fallback_to_name", AmeLaunchGateKindInstance);
+    }
+    NSDictionary *object = nil;
+    if (versionId.length > 0) {
+        object = [remoteVersionList filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(id == %@)", versionId]].firstObject;
+    }
+    if (!object && versionId.length > 0) {
         object = @{
             @"id": versionId,
             @"type": @"custom"
         };
+    }
+    if (!object) {
+        // 连版本 id 都拿不到：不静默 return，明确告知（这不是门禁而是「无可启动对象」）。
+        AmeGameLandscapeLockExit();
+        [self setInteractionEnabled:YES forDownloading:YES];
+        showDialog(localize(@"Error", nil), localize(@"i18n_str_43", nil));
+        return;
     }
 
     self.task = [MinecraftResourceDownloadTask new];
@@ -713,17 +743,20 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             [self jit_reattachJIT26ThenLaunch:handler];
             return;
         }
-        // ★ [JIT-FLOW] 三态可见化：isJITEnabled=1 但探针全灭 ⇒ CS_DEBUGGED 粘滞、
-        //   调试器很可能已脱离。非 (TXM+FORCE_MIRRORED) 机型不走上面的重挂闸门，
-        //   直启会在首个 brk 处 EXC_BREAKPOINT。只打可辨识日志，不改行为。
-        if (!JIT26IsLikelyDebuggerKeepAttached()) {
-            NSLog(@"[JIT-FLOW] [NavCtrl] WARNING: isJITEnabled=1 but no live JIT26 debugger (ppid=%d traced=%d exn=%d); device gate not (TXM+FORCE_MIRRORED) -- launch may hit brk #0x69",
-                  getppid(), JIT26DebuggerAttachedViaPtrace(), JIT26DebuggerViaExceptionPorts());
+        // ★ [JIT-STATUS] 直启门禁：只有"真能力已验证"才允许直启。声明/接口存在
+        //   （含巨魔 TrollStore 装机能力、粘滞 CS_DEBUGGED）但本次不可用时，绝不
+        //   一条路走到 JVM 首帧 JIT 取指 SIGBUS —— 改成走下方"申请/等待"链路。
+        NSString *ameJitGate = AMEJITLaunchGateReason();
+        if (ameJitGate == nil) {
+            NSLog(@"[JIT] [NavCtrl] JIT verified usable, launching directly");
+            handler();
+            return;
         }
-        NSLog(@"[JIT] [NavCtrl] JIT enabled with live JIT26 debugger, launching directly");
-        handler();
-        return;
-    } else if (hasTrollStoreJIT) {
+        NSLog(@"[JIT-STATUS] [NavCtrl] NOT launching directly (%@) -- routing to request/wait path",
+              ameJitGate);
+        // 刻意不 return：落到下面的 apple-magnifier:// / 使能器 / stikjit:// 链路去申请。
+    }
+    if (hasTrollStoreJIT) {
         // ★ [JIT-FLOW] 原为 completionHandler:nil：apple-magnifier:// 无人处理时
         //   iOS 静默失败，UI 却照样弹「正在等待」。现在拿 urlOK + 明确提示。
         NSURL *jitURL = [NSURL URLWithString:[NSString stringWithFormat:@"apple-magnifier://enable-jit?bundle-id=%@", NSBundle.mainBundle.bundleIdentifier]];

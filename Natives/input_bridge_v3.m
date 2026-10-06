@@ -233,8 +233,143 @@ static uint32_t ame53_keycode_from_scancode(SDL3_Scancode sc) {
     }
 }
 
+// ============================================================================
+// ★ [HWKBD-KEYMAP] GLFW 修饰位 → SDL3 SDL_Keymod + SDL 键态镜像
+//
+// 为什么必须有（字节码实证，不是推断）：
+//   MC 26.3 的 SDLEventHandler.handleKeyEvent 反编译为
+//       new KeyEvent(ev.key().scancode(), ev.key().key(), ev.key().mod())
+//   即 KeyEvent.modifiers 就是 SDL 键盘事件的 mod 字段原样；
+//   而 com.mojang.blaze3d.platform.InputConstants（26.3）的掩码已改成 SDL 语义
+//   （javap -p -constants 实证）：
+//       MOD_SHIFT=3  MOD_CONTROL=192(0x00C0)  MOD_ALT=768(0x0300)
+//       MOD_SUPER=3072(0x0C00)  MOD_CAPS_LOCK=8192(0x2000)  MOD_NUM_LOCK=4096(0x1000)
+//   ⇒ 事件 mod 必须是 SDL_Keymod。【旧代码恒写 ev.mod = 0】⇒ KeyEvent.hasShiftDown()
+//     /hasControlDown() 永远 false ⇒ F3+Shift、F3+B 之类的“修饰组合”在游戏里全失效。
+//
+// 第二个必须做的（很多注入实现都漏了）：
+//   InputConstants.isKeyDown(int scancode) 在 26.3 的实现是
+//       SDLKeyboard.SDL_GetKeyboardState().get(scancode) != 0
+//   —— 读的是 **SDL 全局键态数组**，而 SDL_PushEvent 只入队、**不会**更新该数组。
+//   ⇒ 凡是走“轮询”而非“事件”的消费者都看不到我们注入的键：
+//       Minecraft.hasShiftDown()/hasControlDown()（Shift+左键 = 潜行放置/快捷取物、
+//       GUI 里 Shift+点击 = 整组搬运）、KeyboardHandler.tick() 的 F3 长按（F3+C 崩溃测试）、
+//       KeyMapping.setAll()、InputQuirks.isQuitShortcutDown()。
+//   ⇒ 因此注入时同步维护 SDL 键态数组（按 scancode 索引的 512 B bool 数组）
+//     与 SDL mod 状态，才能让“组合键 + Shift+点击 + F3 长按”真的可用。
+// ============================================================================
+#define AME_SDL_KMOD_LSHIFT 0x0001u
+#define AME_SDL_KMOD_RSHIFT 0x0002u
+#define AME_SDL_KMOD_LCTRL  0x0040u
+#define AME_SDL_KMOD_RCTRL  0x0080u
+#define AME_SDL_KMOD_LALT   0x0100u
+#define AME_SDL_KMOD_RALT   0x0200u
+#define AME_SDL_KMOD_LGUI   0x0400u
+#define AME_SDL_KMOD_RGUI   0x0800u
+#define AME_SDL_KMOD_NUM    0x1000u
+#define AME_SDL_KMOD_CAPS   0x2000u
+#define AME_SDL_KMOD_NONE   0x0000u
+// SDL3 键态数组长度（SDL_SCANCODE_COUNT = 512）
+#define AME_SDL_SCANCODE_COUNT 512
+
+typedef const bool *(*ame_SDL_GetKeyboardState_t)(int *numkeys);
+typedef void (*ame_SDL_SetModState_t)(unsigned short modstate);
+
+// ★ [HWKBD-KEYMAP] Ctrl→Cmd(Super) 合成事件的递归深度。
+//   由 Ctrl 合成的 Super 键【只送事件、不写 SDL 键态】—— 因为“Cmd 处于按下态”是
+//   轮询型消费者（如 InputQuirks 里的退出快捷键 = Cmd+Q）的输入，属于游戏/系统级行为，
+//   不能由“按了 Ctrl”间接触发。旧代码本来也不写键态 ⇒ 这样保持等价、零回归。
+static int sHWKBD_superAliasDepth = 0;
+
+// GLFW mods → SDL_Keymod（左右两位一起给 = MC 的合并掩码）
+static uint16_t ame_glfwModsToSDLKeymod(int glfwMods) {
+    uint16_t m = AME_SDL_KMOD_NONE;
+    if (glfwMods & GLFW_MOD_SHIFT)     m |= (AME_SDL_KMOD_LSHIFT | AME_SDL_KMOD_RSHIFT);
+    if (glfwMods & GLFW_MOD_CONTROL)   m |= (AME_SDL_KMOD_LCTRL  | AME_SDL_KMOD_RCTRL);
+    if (glfwMods & GLFW_MOD_ALT)       m |= (AME_SDL_KMOD_LALT   | AME_SDL_KMOD_RALT);
+    if (glfwMods & GLFW_MOD_SUPER)     m |= (AME_SDL_KMOD_LGUI   | AME_SDL_KMOD_RGUI);
+    if (glfwMods & GLFW_MOD_CAPS_LOCK) m |= AME_SDL_KMOD_CAPS;
+    if (glfwMods & GLFW_MOD_NUM_LOCK)  m |= AME_SDL_KMOD_NUM;
+    return m;
+}
+
+// 惰性解析（SDL 在 26.3 才 dlopen 进来，JNI_OnLoad 时可能还没有）
+static ame_SDL_GetKeyboardState_t ame_hwKbdGetKeyboardStateFunc(void) {
+    static ame_SDL_GetKeyboardState_t f = NULL;
+    static BOOL looked = NO;
+    if (!looked) {
+        looked = YES;
+        f = (ame_SDL_GetKeyboardState_t)dlsym(RTLD_DEFAULT, "SDL_GetKeyboardState");
+        NSLog(@"[HWKBD-KEYMAP] SDL_GetKeyboardState resolved: %p (键态镜像通道%s)",
+              (void *)f, f != NULL ? "可用" : "不可用 -- 轮询型修饰查询(hasShiftDown/Shift+点击)将退化为不可用");
+    }
+    return f;
+}
+
+static ame_SDL_SetModState_t ame_hwKbdSetModStateFunc(void) {
+    static ame_SDL_SetModState_t f = NULL;
+    static BOOL looked = NO;
+    if (!looked) {
+        looked = YES;
+        f = (ame_SDL_SetModState_t)dlsym(RTLD_DEFAULT, "SDL_SetModState");
+    }
+    return f;
+}
+
+// ★ 键态镜像：把注入的按键写进 SDL 自己的键态数组（SDL 对真实按键也是这么做的）。
+//   只写 0/1；越界一律拒绝（防坏指针/防越界写）。
+static void ame_hwKbdMirrorKeyState(int sdlScancode, bool down, uint16_t sdlMods) {
+    if (sdlScancode < 0 || sdlScancode >= AME_SDL_SCANCODE_COUNT) return;
+
+    ame_SDL_GetKeyboardState_t getState = ame_hwKbdGetKeyboardStateFunc();
+    if (getState != NULL) {
+        int numkeys = 0;
+        const bool *state = getState(&numkeys);
+        // ★ [KBD-106] 以 SDL 自己回报的 numkeys 为上限（硬编码 512 只作兜底）。
+        //   我们写的是 SDL 进程堆里的那块数组；原先只比 512，一旦 SDL 的数组
+        //   比 512 短（或 getState 返回的不是那块数组），就是越界写 → 堆破坏，
+        //   之后可能在完全无关的地方（含 libjvm 自己的符号表 malloc 块）以
+        //   SIGSEGV 现身。写不进去就不写（对应键的轮询态退化为"看不到"，
+        //   事件本身仍照常投递，不崩）。
+        if (state != NULL && numkeys > 0 && numkeys <= AME_SDL_SCANCODE_COUNT &&
+            sdlScancode < numkeys) {
+            // SDL_GetKeyboardState 返回 const 指针，但这份数组就是 SDL 自身在真实
+            // 按键时更新的那一份；注入路径必须写它，否则轮询型消费者看不到按键。
+            // （SDL3 内部实现见 SDL_keyboard.c：SDL_keyboard->keystate，512 项。）
+            bool *writable = (bool *)state;
+            writable[sdlScancode] = down;
+        } else {
+            static int ame106_sdlKeystateSkipLogs = 0;
+            if (ame106_sdlKeystateSkipLogs++ < 3) {
+                NSLog(@"[KBD-106] SDL 键态镜像跳过：numkeys=%d scancode=%d（不越界写；事件仍投递）",
+                      numkeys, sdlScancode);
+            }
+        }
+    }
+
+    ame_SDL_SetModState_t setMod = ame_hwKbdSetModStateFunc();
+    if (setMod != NULL) {
+        static uint16_t sLastSDLMods = 0xFFFFu;   // 初值取不可能值 ⇒ 首次必打日志
+        if (sdlMods != sLastSDLMods) {
+            sLastSDLMods = sdlMods;
+            setMod(sdlMods);
+            NSLog(@"[HWKBD-KEYMAP] SDL mod state <= 0x%04X (SDL_Keymod; MC 26.3 的 MOD_* 就是这套掩码)",
+                  (unsigned)sdlMods);
+        }
+    }
+}
+
 // Push a keyboard event into SDL's event queue
-static void pushSDLKeyboardEvent(SDL3_Scancode scancode, bool down) {
+// ★ [HWKBD-KEYMAP] sdlMods：SDL_Keymod（务必非 0，见上方说明）。
+//   mirrorKeyState：是否把按键写进 SDL 键态数组。由 Ctrl 合成出来的 Super 键传 NO
+//   （见 sHWKBD_superAliasDepth 处说明：轮询态的 “Cmd 已按下” 不能由 Ctrl 间接触发）。
+static void pushSDLKeyboardEvent(SDL3_Scancode scancode, bool down, uint16_t sdlMods,
+                                 BOOL mirrorKeyState) {
+    // 先镜像键态/修饰态：与 SDL 处理真实按键的顺序一致（先更新状态，再投递事件）。
+    if (mirrorKeyState) {
+        ame_hwKbdMirrorKeyState((int)scancode, down, sdlMods);
+    }
+
     if (!pSDL_PushEvent || !g_sdlWindow) return;
     SDL3_KeyboardEvent ev;
     memset(&ev, 0, sizeof(ev));
@@ -243,10 +378,27 @@ static void pushSDLKeyboardEvent(SDL3_Scancode scancode, bool down) {
     ev.which = 0;
     ev.scancode = scancode;
     ev.key = ame53_keycode_from_scancode(scancode);   // Task53: 补 key sym
-    ev.mod = 0;
+    ev.mod = sdlMods;                                 // ★ [HWKBD-KEYMAP] 原来是恒 0
     ev.down = down;
     ev.repeat = false;
     pSDL_PushEvent((void*)&ev);
+}
+
+// ★ [HWKBD-KEYMAP] bridge 侧取证：看一眼“游戏到底收到了什么”。
+//   scancode/key/mod 是游戏侧 KeyEvent 的三个入参，判据齐了才算真到游戏。
+static void ame_hwKbdLogSDLKey(int glfwKey, int sdlScancode, bool down, uint16_t sdlMods) {
+    static int sSDLKeyLogs = 0;
+    BOOL judge = (glfwKey >= GLFW_KEY_F1 && glfwKey <= GLFW_KEY_F12) ||
+                 glfwKey == GLFW_KEY_LEFT_SHIFT || glfwKey == GLFW_KEY_RIGHT_SHIFT ||
+                 glfwKey == GLFW_KEY_LEFT_CONTROL || glfwKey == GLFW_KEY_RIGHT_CONTROL ||
+                 glfwKey == GLFW_KEY_LEFT_ALT || glfwKey == GLFW_KEY_RIGHT_ALT ||
+                 glfwKey == GLFW_KEY_LEFT_SUPER || glfwKey == GLFW_KEY_RIGHT_SUPER;
+    sSDLKeyLogs++;
+    if (judge || sSDLKeyLogs <= 30 || sSDLKeyLogs % 50 == 0) {
+        NSLog(@"[HWKBD-KEYMAP] SDL3 key evt #%d: glfw=%d scancode=%d down=%d SDLmod=0x%04X push=%s keystate=%p",
+              sSDLKeyLogs, glfwKey, sdlScancode, down ? 1 : 0, (unsigned)sdlMods,
+              pSDL_PushEvent != NULL ? "ok" : "NULL", (void *)g_sdlWindow);
+    }
 }
 
 // ============================================================================
@@ -546,8 +698,22 @@ static int glfwKeyToSDLScancode(int glfwKey) {
     // 数字键全部失效、按 5 变成空格等错乱。
     if (glfwKey >= GLFW_KEY_1 && glfwKey <= GLFW_KEY_9) return 30 + (glfwKey - GLFW_KEY_1); // SDL_SCANCODE_1=30..SDL_SCANCODE_9=38
     if (glfwKey == GLFW_KEY_0) return 39;                                                  // SDL_SCANCODE_0=39
-    if (glfwKey >= GLFW_KEY_F1 && glfwKey <= GLFW_KEY_F25) return 58 + (glfwKey - GLFW_KEY_F1); // SDL_SCANCODE_F1=58
-    if (glfwKey >= GLFW_KEY_NUMPAD_0 && glfwKey <= GLFW_KEY_NUMPAD_9) return 98 + (glfwKey - GLFW_KEY_NUMPAD_0);
+    // ★ [HWKBD-KEYMAP] 功能键分段修正：
+    //   SDL_SCANCODE_F1=58 … F12=69（这一段旧公式本来就是对的，保持不动）；
+    //   但 70..103 是 PrintScreen/ScrollLock/Pause/Insert/Home/PageUp/Delete/End/
+    //   PageDown/方向键/NumLock/小键盘 —— 旧公式对 F13..F25 也套 “58+(k-F1)”，
+    //   于是 F13 被算成 70(PrintScreen)、F20 算成 77(End)……
+    //   这正是“F13–F24 要么没映射、要么映射成完全不相干的键”的成因。
+    //   SDL 真值：SDL_SCANCODE_F13=104 … F24=115。
+    if (glfwKey >= GLFW_KEY_F1 && glfwKey <= GLFW_KEY_F12) return 58 + (glfwKey - GLFW_KEY_F1);
+    if (glfwKey >= GLFW_KEY_F13 && glfwKey <= GLFW_KEY_F24) return 104 + (glfwKey - GLFW_KEY_F13);
+    // ★ [HWKBD-KEYMAP] 小键盘数字修正（旧公式错位，数字键 1–9 全部落到别的键上）：
+    //   SDL 的排列是 KP_1=89, KP_2=90 … KP_9=97, KP_0=98, KP_PERIOD=99
+    //   （注意 KP_1..KP_9 在 KP_0 **之前**，与直觉相反）。
+    //   旧写法 `98 + (key - NUMPAD_0)` 让 NUMPAD_0=98 ✓、NUMPAD_1→99(KP_PERIOD) ✗、
+    //   NUMPAD_9→107(F16) ✗ —— 即小键盘 1–9 全部映射成不相干的键。
+    if (glfwKey == GLFW_KEY_NUMPAD_0) return 98;
+    if (glfwKey >= GLFW_KEY_NUMPAD_1 && glfwKey <= GLFW_KEY_NUMPAD_9) return 89 + (glfwKey - GLFW_KEY_NUMPAD_1);
     switch (glfwKey) {
         case GLFW_KEY_SPACE:           return 44;
         case GLFW_KEY_APOSTROPHE:      return 52;
@@ -561,6 +727,10 @@ static int glfwKeyToSDLScancode(int glfwKey) {
         case GLFW_KEY_BACKSLASH:       return 49;
         case GLFW_KEY_RIGHT_BRACKET:   return 48;
         case GLFW_KEY_GRAVE_ACCENT:    return 53;
+        // ★ [HWKBD-KEYMAP] ISO 两个“非 US”键（与键位表 HID 0x32/0x64 一一对应）：
+        //   SDL_SCANCODE_NONUSHASH=50、SDL_SCANCODE_NONUSBACKSLASH=100。
+        case GLFW_KEY_WORLD_1:         return 100;  // §/± (HID 0x64 NonUSBackslash)
+        case GLFW_KEY_WORLD_2:         return 50;   // #/~ (HID 0x32 NonUSPound)
         case GLFW_KEY_ESCAPE:          return 41;
         case GLFW_KEY_ENTER:           return 40;
         case GLFW_KEY_TAB:             return 43;
@@ -593,7 +763,7 @@ static int glfwKeyToSDLScancode(int glfwKey) {
         case GLFW_KEY_NUMPAD_SUBTRACT: return 86;
         case GLFW_KEY_NUMPAD_MULTIPLY: return 85;
         case GLFW_KEY_NUMPAD_DIVIDE:   return 84;
-        case GLFW_KEY_NUMPAD_DECIMAL:  return 220;
+        case GLFW_KEY_NUMPAD_DECIMAL:  return 99;   // ★ [HWKBD-KEYMAP] = SDL_SCANCODE_KP_PERIOD（旧值 220 非 HID 语义）
         case GLFW_KEY_NUMPAD_ENTER:    return 88;
         case GLFW_KEY_NUMPAD_EQUAL:    return 103;
         default:                       return 0; // SDL_SCANCODE_UNKNOWN
@@ -872,10 +1042,72 @@ ADD_CALLBACK_WWIN(WindowSize)
 
 #undef ADD_CALLBACK_WWIN
 
+// ============================================================================
+// ★ [KBD-106] 本线程自己的 JNIEnv —— 绝不复用别线程缓存的 env。
+//
+// #106 崩溃帧（issue 附件 latestlog.txt:177）：
+//   V [libjvm.dylib+0x963ad4] bool ConcurrentHashTable<SymbolTableConfig,(MEMFLAGS)10>
+//     ::get<SymbolTableLookup, SymbolTableGet>(Thread*, SymbolTableLookup&, SymbolTableGet&, bool*)+0x30
+// HotSpot 17 里这一个实例化只出现在 SymbolTable::lookup_only(name,len,hash)，
+// 也就是 SymbolTable::probe 的实现；它的 Thread* 参数就是 Thread::current()。
+// 调用链（字节码/源码级）：JNI GetStaticFieldID / GetFieldID / GetStaticMethodID /
+// GetMethodID / FindClass → InstanceKlass::find_field / find_method（或类名入符号表）
+// → SymbolTable::probe → lookup_only → _the_table->get(Thread::current(), ...)。
+//
+// 所以崩溃 = "做名字/签名解析时，JVM 拿到的 Thread*/句柄不是发起调用的那根线程的"。
+// 一个 JNIEnv* 是【每线程对象】(HotSpot 用 JavaThread::thread_from_jni_environment(env)
+// 反推 JavaThread)，拿 A 线程的 env 在 B 线程里调 JNI，JVM 就会把这次调用当成 A 线程
+// 在执行 —— 而 A 线程可能正同时在别的核上跑，于是符号表的 Thread* 状态是撕裂的/错的。
+// 本仓的 runtimeJNIEnvPtr 正是这种"全局缓存的 env"，且还会被 JavaGUIViewController
+// 用主线程的 env 覆盖（见该文件 refreshBuffer）。
+// ⇒ 任何"可能不是 JNI_OnLoad 那根线程"的调用点，都必须用本函数取 env。
+// ============================================================================
+static JavaVM *ame_resolveRuntimeVM(void);   // 定义见本文件后部（运行期回退解析）
+
+/// 取【当前线程】的 JNIEnv；未 attach 则 AttachCurrentThread（*attachedHere=YES）。
+/// 返回 NULL 表示本线程拿不到可用 env（调用方必须直接放弃本次 JNI，不要退回缓存 env）。
+static JNIEnv *ame_jni_env_for_current_thread(BOOL *attachedHere) {
+    if (attachedHere) *attachedHere = NO;
+    JavaVM *vm = ame_resolveRuntimeVM();
+    if (vm == NULL) return NULL;
+    JNIEnv *env = NULL;
+    jint st = (*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_4);
+    if (st == JNI_OK && env != NULL) return env;
+    env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, (void **)&env, NULL) == JNI_OK && env != NULL) {
+        if (attachedHere) *attachedHere = YES;
+        return env;
+    }
+    return NULL;
+}
+
+/// 与 ame_jni_env_for_current_thread 配对：只在本函数自己 attach 过时才 detach。
+static void ame_jni_detach_if_attached(BOOL attachedHere) {
+    JavaVM *vm;
+    if (!attachedHere) return;
+    vm = ame_resolveRuntimeVM();
+    if (vm != NULL) (*vm)->DetachCurrentThread(vm);
+}
+
+// ★ [KBD-106] keyDownBuffer 惰性解析的"需求位 + 执行点分离"。
+//   置位者 = 按键路径（UIKit 主线程 pressesBegan / GCMouse 回调线程），它【不调 JNI】；
+//   执行者 = pojavPumpEvents（保证是 Java 线程），只有它才做 GetStaticFieldID。
+static _Atomic int ame106_keyDownBufferWanted = 0;
+static jbyte *ame106_resolveKeyDownBufferOnJavaThread(void);   // 定义见本文件后部
+
 void handleFramebufferSizeJava(void* window, int w, int h) {
     if(GLFW_invoke_CursorEnter)GLFW_invoke_CursorEnter(window, 1);
     if(GLFW_invoke_WindowPos)GLFW_invoke_WindowPos(window, 0, 0);
-    (*runtimeJNIEnvPtr)->CallStaticVoidMethod(runtimeJNIEnvPtr, vmGlfwClass, method_internalWindowSizeChanged, (long)window, w, h);
+    // ★ [KBD-106] 原为 (*runtimeJNIEnvPtr)->CallStaticVoidMethod(runtimeJNIEnvPtr, ...)
+    //   —— 那是 JNI_OnLoad 那根线程的 env，本函数却由 pojavPumpEvents（游戏线程）
+    //   调用；env 与线程不配对时 Thread::current() 不对，符号表解析即崩（见上）。
+    if (vmGlfwClass == NULL || method_internalWindowSizeChanged == NULL) return;
+    BOOL attached = NO;
+    JNIEnv *env = ame_jni_env_for_current_thread(&attached);
+    if (env == NULL) return;
+    (*env)->CallStaticVoidMethod(env, vmGlfwClass, method_internalWindowSizeChanged, (long)window, w, h);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    ame_jni_detach_if_attached(attached);
 }
 
 // Issue #140 加固：事件队列容量与 environ.h 中的 events[8000] 严格对应。
@@ -891,6 +1123,16 @@ void pojavPumpEvents(void* window) {
         NSLog(@"[InputDiag] pojavPumpEvents: isInputReady set to YES, showingWindow=%p", (void*)showingWindow);
     }
     pumpCount++;
+
+    // ★ [KBD-106] 本函数【一定是 Java 线程】在跑（由 GLFW.glfwPollEvents →
+    //   JNI.callJV(PumpEvents) 进来），所以 keyDownBuffer 的惰性 GetStaticFieldID
+    //   只能在这里做 —— 不能像原来那样在 CallbackBridge_nativeSendKey 里做
+    //   （那条路是 UIKit 主线程/GCMouse 回调线程）。详见 ame106_* 两处注释。
+    if (keyDownBuffer == NULL &&
+        atomic_load_explicit(&ame106_keyDownBufferWanted, memory_order_acquire)) {
+        atomic_store_explicit(&ame106_keyDownBufferWanted, 0, memory_order_release);
+        (void)ame106_resolveKeyDownBufferOnJavaThread();
+    }
 
     // Poll SDL relative mouse mode periodically (not just on touch) so cursor
     // hides automatically when entering the map, without needing a touch first.
@@ -1331,27 +1573,59 @@ void CallbackBridge_queueModifierSync(int mods) {
 void CallbackBridge_syncModifiersToMC(int mods) {
     if (!runtimeJavaVMPtr || !isInputReady) return;
 
-    JNIEnv *env = NULL;
-    jint envStatus = (*runtimeJavaVMPtr)->GetEnv(
-        runtimeJavaVMPtr, (void **)&env, JNI_VERSION_1_4);
-    if (envStatus != JNI_OK || !env) return;
+    // ★ [KBD-106] 符号表探测【只做一次】+ 负结果缓存。
+    //
+    // 物理键盘每按一键都会经 KeyboardInput.m 的 CallbackBridge_queueModifierSync
+    // 产生一条 EVENT_TYPE_MODIFIERS（全树唯一生产者，触屏/手柄路径不产生），
+    // 由 pojavPumpEvents 在本函数消费。原实现【每按键】都重新做
+    //     FindClass("com/mojang/blaze3d/platform/InputConstants")
+    //   + GetStaticMethodID(..., "setModifiers", "(I)V")
+    // 这两步都会走 HotSpot 的 SymbolTable::probe → lookup_only
+    //   → ConcurrentHashTable<SymbolTableConfig>::get(Thread::current(), ...)
+    // —— 正是 #106 的崩溃帧（latestlog.txt:177）。类不存在/方法不存在时它每按键
+    // 还要抛+清一次异常。改成"一次解析、结果缓存"，per-key 符号表探测降为 0。
+    static jclass    s_inputConstantsClass = NULL;   // 全局引用（跨调用存活）
+    static jmethodID s_setModifiers        = NULL;
+    static int       s_state               = 0;      // 0=未解析 1=可用 2=不存在(负缓存)
 
-    jclass inputConstantsClass = (*env)->FindClass(env, "com/mojang/blaze3d/platform/InputConstants");
-    if (!inputConstantsClass) {
-        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-        return;
+    if (s_state == 2) return;
+
+    JNIEnv *env = NULL;
+    jint envStatus = (*runtimeJavaVMPtr)->GetEnv(runtimeJavaVMPtr, (void **)&env, JNI_VERSION_1_4);
+    if (envStatus != JNI_OK || !env) return;         // 本线程未 attach：不置位，下次再说
+
+    if (s_state == 0) {
+        jclass c = (*env)->FindClass(env, "com/mojang/blaze3d/platform/InputConstants");
+        if (c == NULL) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            s_state = 2;
+            NSLog(@"[KBD-106] InputConstants 不存在 -> 关闭 modifier 反射同步（负缓存：不再有 per-key 符号表探测）");
+            return;
+        }
+        jmethodID m = (*env)->GetStaticMethodID(env, c, "setModifiers", "(I)V");
+        if (m == NULL) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            (*env)->DeleteLocalRef(env, c);
+            s_state = 2;
+            NSLog(@"[KBD-106] InputConstants.setModifiers 不存在 -> 关闭 modifier 反射同步（负缓存：不再有 per-key 符号表探测）");
+            return;
+        }
+        s_inputConstantsClass = (*env)->NewGlobalRef(env, c);
+        (*env)->DeleteLocalRef(env, c);
+        s_setModifiers = m;
+        s_state = (s_inputConstantsClass != NULL) ? 1 : 2;
+        NSLog(@"[KBD-106] modifier 反射同步解析完成（仅此一次）: class=%p method=%p",
+              (void *)s_inputConstantsClass, (void *)s_setModifiers);
+        if (s_state == 2) return;
     }
-    jmethodID setModifiersMethod = (*env)->GetStaticMethodID(env, inputConstantsClass, "setModifiers", "(I)V");
-    if (!setModifiersMethod) {
-        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
-        (*env)->DeleteLocalRef(env, inputConstantsClass);
-        return;
-    }
-    (*env)->CallStaticVoidMethod(env, inputConstantsClass, setModifiersMethod, (jint)mods);
+
+    if (s_state != 1 || s_inputConstantsClass == NULL || s_setModifiers == NULL) return;
+
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->CallStaticVoidMethod(env, s_inputConstantsClass, s_setModifiers, (jint)mods);
     if ((*env)->ExceptionCheck(env)) {
         (*env)->ExceptionClear(env);
     }
-    (*env)->DeleteLocalRef(env, inputConstantsClass);
 }
 
 // JNI wrapper：供 Java 端 CallbackBridge.nativeSetModifiers(int) 调用
@@ -1659,30 +1933,64 @@ char getKeyModifiers(int key, int action) {
 //       ② 写入前做 0..316 边界钳制。
 #define AME_KEYDOWN_BUFFER_LEN 317
 
-static jbyte* ame106_tryResolveKeyDownBuffer(void) {
+// ★ [KBD-106] 惰性解析拆成两支：置位（任意线程，不调 JNI） / 解析（仅 Java 线程）。
+//
+// 【已证】崩溃帧 = HotSpot 17 的 SymbolTable 探测：
+//   V [libjvm.dylib+0x963ad4]
+//     ConcurrentHashTable<SymbolTableConfig>::get<SymbolTableLookup, SymbolTableGet>(Thread*, ...)
+//   该实例化只出现在 SymbolTable::probe → lookup_only，其 Thread* 就是 Thread::current()；
+//   上游调用者是 JNI 的 Get*FieldID / Get*MethodID / FindClass
+//   （InstanceKlass::find_field / find_method 里做 SymbolTable::probe(name,len)）。
+//
+// 【推断】(全栈拿不到：#106 的附件只有 latestlog.txt，没有 hs_err_pid*.log)
+//   外接键盘路径上唯一会做这种符号表探测的、且【只在物理键盘上发生】的调用点有两个：
+//     ① 本处 GetStaticFieldID("keyDownBuffer")  —— 本文件
+//     ② CallbackBridge_syncModifiersToMC 的 FindClass+GetStaticMethodID("setModifiers")
+//        （EVENT_TYPE_MODIFIERS 全树唯一生产者就是 KeyboardInput → queueModifierSync）
+//   ⇒ 崩溃时 JVM 拿到的 Thread*/句柄很可能不是发起调用那根线程的。
+//     旧实现在 UIKit 主线程（pressesBegan）/ GCMouse 回调线程里直接 Attach + GetStaticFieldID，
+//     且全树有多处复用"全局缓存的 runtimeJNIEnvPtr"（每线程对象！）。
+//
+// 修法：keyDownBuffer 的解析搬到 pojavPumpEvents（必然是 Java 线程）；
+//       按键路径只置需求位，一次 JNI 都不调（见 ame106_tryResolveKeyDownBuffer）。
+// 保留（不回退）：#106 原有的 NULL/越界兜底语义 + 键事件仍正常投递。
+static jbyte* ame106_resolveKeyDownBufferOnJavaThread(void) {
     if (keyDownBuffer != NULL) return keyDownBuffer;
-    if (runtimeJavaVMPtr == NULL || vmGlfwClass == NULL) return NULL;
-    JNIEnv *env = NULL;
-    jint rc = (*runtimeJavaVMPtr)->GetEnv(runtimeJavaVMPtr, (void **)&env, JNI_VERSION_1_4);
+    if (vmGlfwClass == NULL) return NULL;
     BOOL attachedHere = NO;
-    if (rc != JNI_OK || env == NULL) {
-        if ((*runtimeJavaVMPtr)->AttachCurrentThread(runtimeJavaVMPtr, (void **)&env, NULL) != JNI_OK || env == NULL) {
-            return NULL;
-        }
-        attachedHere = YES;
-    }
+    JNIEnv *env = ame_jni_env_for_current_thread(&attachedHere);   // ★ 本线程 env
+    if (env == NULL) return NULL;
     jfieldID f = (*env)->GetStaticFieldID(env, vmGlfwClass, "keyDownBuffer", "Ljava/nio/ByteBuffer;");
-    if (f == NULL) {
-        if ((*env)->ExceptionOccurred(env)) (*env)->ExceptionClear(env);
+    if (f == NULL || (*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
     } else {
         jobject buf = (*env)->GetStaticObjectField(env, vmGlfwClass, f);
         if (buf != NULL) {
             keyDownBuffer = (*env)->GetDirectBufferAddress(env, buf);
+            (*env)->DeleteLocalRef(env, buf);
         }
     }
-    if (attachedHere) (*runtimeJavaVMPtr)->DetachCurrentThread(runtimeJavaVMPtr);
+    ame_jni_detach_if_attached(attachedHere);
     if (keyDownBuffer != NULL) {
-        NSLog(@"[GLFW-FLOW] #106: keyDownBuffer lazily resolved -> %p", (void *)keyDownBuffer);
+        NSLog(@"[KBD-106] keyDownBuffer lazily resolved ON JAVA THREAD (pump) -> %p "
+              @"-- mirror 写入恢复；按键线程零 JNI", (void *)keyDownBuffer);
+    } else {
+        NSLog(@"[KBD-106] keyDownBuffer 仍拿不到（Java 侧 GLFW.keyDownBuffer 字段缺失）"
+              @"-- 跳过镜像写入（不回退：键事件仍经 GLFW_invoke_Key/SDL 投递）");
+    }
+    return keyDownBuffer;
+}
+
+// 按键路径调用：只置需求位，绝不在这里调 JNI。
+// （本函数可能在 UIKit 主线程 / GCMouse 回调线程被调；旧实现会在这里 Attach + GetStaticFieldID。）
+static jbyte* ame106_tryResolveKeyDownBuffer(void) {
+    if (keyDownBuffer != NULL) return keyDownBuffer;
+    atomic_store_explicit(&ame106_keyDownBufferWanted, 1, memory_order_release);
+    static BOOL ame106_loggedWanted = NO;
+    if (!ame106_loggedWanted) {
+        ame106_loggedWanted = YES;
+        NSLog(@"[KBD-106] keyDownBuffer 未解析：本线程只置位、不调 JNI；"
+              @"真正的 GetStaticFieldID 交给 pojavPumpEvents（Java 线程）");
     }
     return keyDownBuffer;
 }
@@ -1699,9 +2007,10 @@ void CallbackBridge_nativeSendKey(int key, int scancode, int action, int mods) {
     // Path A: GLFW callbacks (older MC versions)
     if (GLFW_invoke_Key && isInputReady) {
         // ★ [GLFW-FLOW] #106：原为 `keyDownBuffer[MAX(0, key-31)]=(jbyte)action;`
-        //   对 NULL 缓冲写入 = 任一按键崩溃（keyDownBuffer 在 JNI_OnLoad 时机常为
-        //   NULL，见 ame106_tryResolveKeyDownBuffer 处的根因说明）。此处先惰性解析，
-        //   仍拿不到就跳过（键事件仍经下方 GLFW_invoke_Key 正常投递），并做边界钳制。
+        //   对 NULL 缓冲写入 = 任一按键崩溃。此处先惰性解析（★ [KBD-106] 已改为
+        //   "只置需求位、不调 JNI"，真正的 GetStaticFieldID 在 pojavPumpEvents 的
+        //   Java 线程里做），仍拿不到就跳过（键事件仍经下方 GLFW_invoke_Key 正常投递），
+        //   并做边界钳制。
         if (keyDownBuffer == NULL) {
             (void)ame106_tryResolveKeyDownBuffer();
         }
@@ -1710,6 +2019,13 @@ void CallbackBridge_nativeSendKey(int key, int scancode, int action, int mods) {
             if (kdbIndex < 0) kdbIndex = 0;
             if (kdbIndex < AME_KEYDOWN_BUFFER_LEN) {
                 keyDownBuffer[kdbIndex] = (jbyte)action;
+                // ★ [KBD-106] 真机判据：镜像写入"可用且零 JNI"的那一行（只打一次）。
+                static BOOL ame106_loggedMirror = NO;
+                if (!ame106_loggedMirror) {
+                    ame106_loggedMirror = YES;
+                    NSLog(@"[KBD-106] keyDownBuffer mirror active (纯本地写入, 按键线程零 JNI) idx=%d key=%d",
+                          kdbIndex, key);
+                }
             } else {
                 NSLog(@"[GLFW-FLOW] #106: keyDownBuffer index %d out of range (key=%d, len=%d) -- skipped write",
                       kdbIndex, key, AME_KEYDOWN_BUFFER_LEN);
@@ -1736,15 +2052,56 @@ void CallbackBridge_nativeSendKey(int key, int scancode, int action, int mods) {
     if (!GLFW_invoke_Key && g_sdlWindow) {
         int sdlScancode = glfwKeyToSDLScancode(key);
         if (sdlScancode != 0) {
-            pushSDLKeyboardEvent(sdlScancode, action != 0);
+            // ★ [HWKBD-KEYMAP] mods 必须下传（旧代码在这一层把修饰位丢掉了）：
+            //   26.3 的 KeyEvent.modifiers 就是 SDL 事件的 mod 字段，
+            //   恒 0 ⇒ KeyEvent.hasShiftDown()/hasControlDown() 永 false ⇒
+            //   F3+Shift、F3+B、Shift+点击 全部失效。
+            //   屏幕按钮/手柄路径传 mods=0（不经 KeyboardInput），故与 Path A 同口径
+            //   做 getKeyModifiers 兜底 —— 顺带让“屏幕上的 Shift/Ctrl 按钮”在 26.3 也有效。
+            int effMods = mods;
+            if (effMods == 0) effMods = getKeyModifiers(key, action);
+            uint16_t sdlMod = ame_glfwModsToSDLKeymod(effMods);
+            BOOL mirrorKeyState = (sHWKBD_superAliasDepth == 0);
+            ame_hwKbdLogSDLKey(key, sdlScancode, action != 0, sdlMod);
+            pushSDLKeyboardEvent(sdlScancode, action != 0, sdlMod, mirrorKeyState);
+        } else {
+            static int sUnmappedSDLKey = 0;
+            sUnmappedSDLKey++;
+            if (sUnmappedSDLKey <= 10) {
+                NSLog(@"[HWKBD-KEYMAP] SDL 侧无 scancode 映射: glfw=%d (该键不会被游戏看到; 需补 glfwKeyToSDLScancode)",
+                      key);
+            }
         }
     }
 
     // On macOS, Minecraft expects the Command key
-    if (key == GLFW_KEY_LEFT_CONTROL) {
-        CallbackBridge_nativeSendKey(GLFW_KEY_LEFT_SUPER, 0, action, mods);
-    } else if (key == GLFW_KEY_RIGHT_CONTROL) {
-        CallbackBridge_nativeSendKey(GLFW_KEY_RIGHT_SUPER, 0, action, mods);
+    //
+    // ★ [HWKBD-KEYMAP] 兼容开关 + 依据说明：
+    //   MC 自己就有一条同类 quirk —— InputQuirks.REPLACE_CTRL_KEY_WITH_CMD_KEY = (OS == OSX)
+    //   （javap 实证）。本启动器不加 mods_preload、不伪装 os.name ⇒ MC 判定非 OSX
+    //   ⇒ 它不会自己去替换 Ctrl，于是「Ctrl 顶替 ⌘」这条补偿必须由启动器做（既有行为）。
+    //   现在 ⌘ 键已按 HID 0xE3/0xE7 正常映射（KeyboardInput.m），
+    //   想要“PC 一样 Ctrl 就是 Ctrl”可以设环境变量 AMETHYST_HWKBD_CTRL_AS_SUPER=0 关掉。
+    //   默认保持开启 = 不回退既有手感。
+    static int sHWKBD_ctrlAsSuper = -1;
+    if (sHWKBD_ctrlAsSuper < 0) {
+        const char *v = getenv("AMETHYST_HWKBD_CTRL_AS_SUPER");
+        sHWKBD_ctrlAsSuper = (v != NULL &&
+                              (v[0] == '0' || v[0] == 'n' || v[0] == 'N' || v[0] == 'f' || v[0] == 'F'))
+                             ? 0 : 1;
+        NSLog(@"[HWKBD-KEYMAP] Ctrl→Cmd(Super) 合成事件: %s (AMETHYST_HWKBD_CTRL_AS_SUPER=0 可关闭)",
+              sHWKBD_ctrlAsSuper ? "开(默认, 与既有行为一致)" : "关(PC 语义: Ctrl 就是 Ctrl)");
+    }
+    if (sHWKBD_ctrlAsSuper) {
+        if (key == GLFW_KEY_LEFT_CONTROL) {
+            sHWKBD_superAliasDepth++;
+            CallbackBridge_nativeSendKey(GLFW_KEY_LEFT_SUPER, 0, action, mods);
+            sHWKBD_superAliasDepth--;
+        } else if (key == GLFW_KEY_RIGHT_CONTROL) {
+            sHWKBD_superAliasDepth++;
+            CallbackBridge_nativeSendKey(GLFW_KEY_RIGHT_SUPER, 0, action, mods);
+            sHWKBD_superAliasDepth--;
+        }
     }
 }
 

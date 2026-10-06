@@ -2778,6 +2778,12 @@ static btRawAXFunc btRawAXGet(void) {
 #pragma mark - Input view stuff
 
 -(BOOL)textFieldShouldReturn:(UITextField *)textField {
+    // ★ [HWKBD-IME] 回车 = 提交/结束本次输入：若仍在组字(候选未上屏)，先 unmark。
+    //   半成品既不留在宿主里，也不作为正文发进游戏。
+    if (textField.markedTextRange != nil) {
+        NSLog(@"[HWKBD-IME] textFieldShouldReturn: flushing composition before Enter");
+        [textField unmarkText];
+    }
     CallbackBridge_nativeSendKey(GLFW_KEY_ENTER, 0, 1, 0);
     CallbackBridge_nativeSendKey(GLFW_KEY_ENTER, 0, 0, 0);
     textField.text = @" ";
@@ -2795,11 +2801,13 @@ static btRawAXFunc btRawAXGet(void) {
                 case SPECIALBTN_KEYBOARD:
                     if (held == 0) {
                         if (self.inputTextField.isFirstResponder) {
+                            NSLog(@"[HWKBD-IME] keyboard toggle OFF -> resign IME host");
                             self.inputTextField.preventUnexpectedResign = NO;
                             [self.inputTextField resignFirstResponder];
                             self.inputTextField.preventUnexpectedResign = YES;
                             self.inputTextField.alpha = 1.0f;
                         } else {
+                            NSLog(@"[HWKBD-IME] keyboard toggle ON -> becomeFirstResponder (system IME now drives text input)");
                             self.inputTextField.preventUnexpectedResign = YES;
                             [self.inputTextField becomeFirstResponder];
                             self.inputTextField.text = @" ";

@@ -249,6 +249,8 @@
         if (([fromVer[key] isKindOfClass:NSString.class] && [fromVer[key] length] > 0) || targetVer[key] == nil) {
             targetVer[key] = fromVer[key];
         } else {
+            // ★ [PREDL] 该键未从子版本继承到父版本时打印，便于排查“合并后 metadata 缺字段”
+            //   导致的意外启动期补件（属正常安全回退，不是错误）。
             NSLog(@"[MCDL] insertSafety: how to insert %@?", key);
         }
     }
@@ -318,12 +320,31 @@
 + (void)tweakVersionJson:(NSMutableDictionary *)json {
     // Exclude some libraries
     for (NSMutableDictionary *library in json[@"libraries"]) {
+        // ★ [NO-BLOCK][LIB-RULES] 库适用性判定必须与「真实会不会下/会不会被要求」
+        //   三处同源（本函数 = 下载 filter、downloadClientLibraries、启动准入门禁
+        //   missingRequiredLaunchFilesForMetadata 都只认这个 skip 标记）。
+        //   旧实现只看 classifiers/natives/lwjgl 三条，**忽略 OS rules** ⇒ 在 iOS（视为
+        //   osx）上本不适用的库（rules 只 allow windows/linux，或 disallow osx）：
+        //     ① 不被 skip ⇒ downloadClientLibraries 照样去下（无 url 时还生成 404 URL）；
+        //     ② 下不来就进 failedFiles；
+        //     ③ 启动准入门禁把它算作「必需件」⇒ 判「缺件」⇒ 重试/放弃 ⇒ 拦住启动。
+        //   这正是「正常安装却报缺件」的一类假阳性根因。Forge/NeoForge 直装器早已
+        //   用 evaluateRules 处理（ForgeDirectInstaller.m / NeoForgeDirectInstaller.m），
+        //   这里补齐到唯一真源，三处自动一致。
+        id rulesObj = library[@"rules"];
+        BOOL libraryApplicable = YES;
+        if ([rulesObj isKindOfClass:[NSArray class]]) {
+            libraryApplicable = [self evaluateRules:rulesObj];
+        }
+
         library[@"skip"] = @(
             // Exclude platform-dependant libraries
             library[@"downloads"][@"classifiers"] != nil ||
             library[@"natives"] != nil ||
             // Exclude LWJGL libraries
-            [library[@"name"] hasPrefix:@"org.lwjgl"]
+            [library[@"name"] hasPrefix:@"org.lwjgl"] ||
+            // ★ [NO-BLOCK][LIB-RULES] 排除 OS rules 在 iOS(osx) 上不适用的库
+            !libraryApplicable
         );
 
         NSArray<NSString *> *libNameParts = [library[@"name"] componentsSeparatedByString:@":"];
@@ -336,6 +357,12 @@
         NSString *versionStr = libNameParts[2];
         NSArray<NSString *> *version = [versionStr componentsSeparatedByString:@"."];
         if ([library[@"name"] hasPrefix:@"net.java.dev.jna:jna:"]) {
+            // ★ [PREDL] 这是【故意】保留在启动/安装两处都会执行的兼容性改写（非漏项）：
+            //   MC 26.3+ 要求 JNA 5.17.0，但其 darwin-aarch64 libjnidispatch 在 iOS 上会 native crash。
+            //   改写只作用于【内存里的 metadata】（不落盘），安装与启动走同一条 downloadVersion:
+            //   路径 ⇒ 两边看到的 JNA 版本一致，故不会造成“安装下了 5.17、启动又补 5.13”的重复下载。
+            //   若日后改成只在启动时改写，就会出现“启动现补 jna-5.13.0.jar”——日志会打印下行的
+            //   “Replacing JNA … / 现补 …”，据此可判。
             // 强制将 JNA 替换为 5.13.0 以保证 iOS 兼容性。
             // MC 26.3+ 要求 JNA 5.17.0，但其 darwin-aarch64 libjnidispatch 在 iOS 上
             // 加载 IOKit/CoreFoundation 后会导致 native crash/卡死（26.2 + JNA 5.13.0 正常）。
