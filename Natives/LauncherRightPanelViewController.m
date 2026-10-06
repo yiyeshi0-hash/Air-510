@@ -38,6 +38,23 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 // ★ [MISS] 「影响游玩的缺件 ⇒ 自动补下」的有界次数：用尽后仍缺才告知玩家（重试 / 继续启动）。
 static const NSInteger kAMEMissingAutoRedownloadMax = 2;
 
+// ★ [MISS-SET] 校验集 ② 客户端 jar 的最小合理字节数：抓 0 字节 / 截断 / HTML 错误页
+//   （26.x 客户端 jar 是数十 MB；正常版本 JSON 的 downloads.client 也带 size/sha1）。
+static const unsigned long long kAMEVersionJarMinBytes = 1024ULL * 1024ULL;
+
+// ★ [MISS-SET] 校验集 ⑦ 的 LWJGL 版本判定 —— 与 JavaLauncher.m 的 static ResolveLwjglVersion
+//   同一条规则（此处复用其导出的 ame98_mcMajorFromVersionId）：profile 显式 "333"/"341" 优先；
+//   否则 MC 主版本 ≥26 ⇒ 341（SDL3 绑定，26.2/26.3 同用），其余 ⇒ 333。
+static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString *mcVersionId) {
+    if ([profileValue isEqualToString:@"333"] || [profileValue isEqualToString:@"341"]) {
+        return profileValue;
+    }
+    if (ame98_mcMajorFromVersionId(mcVersionId) >= 26) {
+        return @"341";
+    }
+    return @"333";
+}
+
 @interface LauncherRightPanelViewController () <UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 
 // ★ [NORIGHT] 头像裁剪器的呈现宿主(容器 0×0 后改由"顶层可见 VC"代呈,关闭时要用同一个)
@@ -1740,12 +1757,27 @@ static const NSInteger kAMEMissingAutoRedownloadMax = 2;
     [[self norightPresenter] presentViewController:alert animated:YES completion:nil];
 }
 
-/// ★ [LAUNCH-AFTER-DL][MISS] 本地核对【影响游玩】的启动必需文件（不联网）。判据与下载器共用唯一真源：
-///   ① 版本 JSON 自身；② 每个「下载器真的会下」的库（含 tweakVersionJson 追加的 client.jar
-///   伪库 path=../versions/<id>/<id>.jar）；③ assetIndex JSON；④ 资源对象抽样。
-///   ★ 下载器【永不下载】的对象（skip / OS rules 不适用 / 无 URL / 非标准 Maven 名 /
-///   minecraft.icns）一律记一行 `[MISS] skip=… reason=…` 后【跳过】，不计入缺件 ——
-///   否则就是用户报的「每次启动都提示缺件、却永远下不来」（假缺件拦启动）。
+/// ★ [LAUNCH-AFTER-DL][MISS-SET] 本地核对【影响游玩】的启动必需文件（不联网）。
+///   ★ [MISS-SET] iOS 启动真正必需的 = 下面 7 类（校验集 = 「下载器必需清单 ∩ 本平台适用」，
+///   与下载器 / JavaLauncher 共用同一批真源函数 ⇒ 两边清单不可能漂移）：
+///     ① versions/<id>/<id>.json          版本清单本身
+///     ② versions/<id>/<id>.jar           客户端 jar：存在 + 非空 + size > kAMEVersionJarMinBytes
+///     ③ libraries                        库（★只算本平台适用★：resolvedLibraryArtifactForLaunch
+///                                         过滤后的清单 —— 已排除 natives-*/非 iOS natives/
+///                                         lwjgl-freetype 等 org.lwjgl 系列，判据同下载器）
+///     ④ natives 目录                     该版本原生库解包目录（★JNA 已改从 App 包内加载；
+///                                         该目录是运行期工作目录 ⇒ 不存在就地创建，绝不判缺件）
+///     ⑤ java 运行时                      java_runtimes/java-<版本>（存在 + release 可读；
+///                                         经 getSelectedJavaHome = JavaLauncher 同款判据）
+///     ⑥ assets/indexes/<assetIndex>.json  （★只要索引文件本身★）
+///     ⑦ LWJGL jar 集                     <App>/libs/lwjgl-{341|333}（MC≥26 ⇒ 341；否则 333；
+///                                         与 JavaLauncher.ResolveLwjglVersion 同规则）
+///   ★【明确不校验】：assets/objects/** 单体资源、icons/minecraft.icns、options.txt/servers.dat、
+///   config/defaultconfigs、saves/screenshots/logs/crash-reports/resourcepacks/shaderpacks、
+///   mods/、其它平台专属件（JNA mac/x86 变体、非 iOS natives、.DS_Store 等）——
+///   这些缺了最多是纹理/声音/设置缺失，游戏仍能起，绝不能据此拦启动（详见 D:\CTF\_MISS_SET.md）。
+///   下载器【永不下载】的对象（skip / OS rules 不适用 / 无 URL / 非标准 Maven 名）一律记一行
+///   `[MISS] skip=… reason=…` 后【跳过】，不计入缺件。
 ///   返回 = 影响游玩的缺件清单（空 = 齐备）。
 - (NSArray<NSString *> *)missingRequiredLaunchFilesForMetadata:(NSDictionary *)metadata {
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
@@ -1756,18 +1788,22 @@ static const NSInteger kAMEMissingAutoRedownloadMax = 2;
     NSString *gameDir = [NSString stringWithUTF8String:env];
     NSFileManager *fm = NSFileManager.defaultManager;
 
-    // ① 版本 JSON：metadata["id"] 对应的 versions/<id>/<id>.json
     NSString *vid = [metadata[@"id"] isKindOfClass:[NSString class]] ? metadata[@"id"] : nil;
+
+    // ① 版本 JSON：versions/<id>/<id>.json
     if (vid.length > 0) {
         NSString *vpath = [gameDir stringByAppendingPathComponent:
                            [NSString stringWithFormat:@"versions/%@/%@.json", vid, vid]];
         if (![fm fileExistsAtPath:vpath]) {
+            NSLog(@"[MISS-SET] required(1/version-json)=%@", vpath.lastPathComponent);
             [missing addObject:[NSString stringWithFormat:@"versions/%@/%@.json", vid, vid]];
         }
     }
 
-    // ② 库（含 client.jar 伪库）—— ★ 与下载器同一个「会不会下 / 下到哪」判据（唯一真源）
+    // ②③ 库（含 client.jar 伪库）—— ★ 与下载器同一个「会不会下 / 下到哪」判据（唯一真源）。
+    //   ② 客户端 jar 额外要求 size > kAMEVersionJarMinBytes（抓 0 字节 / 截断 / HTML 错误页）。
     NSArray *libs = [metadata[@"libraries"] isKindOfClass:[NSArray class]] ? metadata[@"libraries"] : @[];
+    NSString *clientJarRel = vid.length > 0 ? [NSString stringWithFormat:@"versions/%@/%@.jar", vid, vid] : nil;
     for (NSDictionary *lib in libs) {
         if (![lib isKindOfClass:[NSDictionary class]]) continue;
         NSDictionary *artifact = [MinecraftResourceUtils resolvedLibraryArtifactForLaunch:lib];
@@ -1787,72 +1823,95 @@ static const NSInteger kAMEMissingAutoRedownloadMax = 2;
         if ([fm fileExistsAtPath:abs]) {
             size = [[fm attributesOfItemAtPath:abs error:nil] fileSize];
         }
-        if (size == 0) {
+        // ★ [MISS-SET] ② 客户端 jar 用阈值判定；③ 其余库只要非空。
+        unsigned long long minSize = (clientJarRel != nil && [p hasSuffix:clientJarRel])
+            ? kAMEVersionJarMinBytes : 1ULL;
+        if (size < minSize) {
             // 连「从哪下」都没有（artifact 无 URL）⇒ 下载器也拿不回来：判为源/平台不适用，
             // 不当作「影响游玩的缺件」（避免永远等一个下不到的文件）。
             id u = artifact[@"url"];
-            if (![u isKindOfClass:[NSString class]] || [(NSString *)u length] == 0) {
+            if (size == 0 && (![u isKindOfClass:[NSString class]] || [(NSString *)u length] == 0)) {
                 NSLog(@"[MISS] skip=%@ reason=not_applicable(no_url)", p);
                 continue;
             }
+            NSLog(@"[MISS-SET] required(2/3) size=%llu(min=%llu)=%@", size, minSize, p.lastPathComponent);
             [missing addObject:[p lastPathComponent] ?: p];
         }
     }
 
-    // ③ assetIndex JSON
+    // ④ natives 目录（该版本原生库解包目录）。
+    //   ★ iOS 上 JNA 从 App 包内加载（[JNA-INBUNDLE]），LWJGL 原生库内嵌于 App 的
+    //   libs/lwjgl-*.jar（运行期由 LWJGL 自行解包到 ${natives_directory}/lwjgl）⇒
+    //   该目录是**运行期工作目录**：全新实例首次启动前尚不存在属正常。
+    //   这里只确保它存在且可写（不存在则就地创建）；创建失败才计为缺件。
+    //   ★ 绝不把「首次启动前不存在」当缺件（那正是要消灭的假缺件）。
+    NSString *nativesDir = [gameDir stringByAppendingPathComponent:@"natives"];
+    BOOL nativesIsDir = NO;
+    if (!([fm fileExistsAtPath:nativesDir isDirectory:&nativesIsDir] && nativesIsDir)) {
+        NSError *nkErr = nil;
+        if ([fm createDirectoryAtPath:nativesDir withIntermediateDirectories:YES attributes:nil error:&nkErr]) {
+            NSLog(@"[MISS-SET] ensure(4/natives) created: %@", nativesDir);
+        } else {
+            NSLog(@"[MISS-SET] required(4/natives) missing & uncreatable: %@ (%@)",
+                  nativesDir, nkErr.localizedDescription);
+            [missing addObject:@"natives/"];
+        }
+    }
+
+    // ⑤ java 运行时（java_runtimes/java-<版本>：存在 + release 可读）。
+    //   ★ 与 JavaLauncher 共用 getSelectedJavaHome（其内部判据 = release + lib/server/libjvm.dylib），
+    //   故此处判缺 ≡ JavaLauncher 的「缺 JRE」判缺（G16），不会出现「门禁说缺、启动器不认」。
+    int minJava = [metadata[@"javaVersion"][@"majorVersion"] intValue];
+    if (minJava == 0) minJava = [metadata[@"javaVersion"][@"version"] intValue];
+    if (minJava == 0) minJava = 8;   // 与 SurfaceViewController.launchMinecraft 同口径
+    NSString *javaTag = (minJava <= 8) ? @"1_16_5_older" : @"1_17_newer";
+    NSString *javaHome = getSelectedJavaHome(javaTag, minJava);
+    if (javaHome == nil) {
+        NSLog(@"[MISS-SET] required(5/java) no runtime >= %d (tag=%@)", minJava, javaTag);
+        [missing addObject:[NSString stringWithFormat:@"java_runtimes/java-%d", minJava]];
+    } else {
+        NSString *releasePath = [javaHome stringByAppendingPathComponent:@"release"];
+        if (![fm fileExistsAtPath:releasePath] || ![fm isReadableFileAtPath:releasePath]) {
+            NSLog(@"[MISS-SET] required(5/java) release unreadable: %@", releasePath);
+            [missing addObject:[NSString stringWithFormat:@"java_runtimes/java-%d(release)", minJava]];
+        }
+    }
+
+    // ⑥ assetIndex JSON（★只要索引文件本身★；assets/objects/** 单体一律不检查）
     NSDictionary *ai = [metadata[@"assetIndex"] isKindOfClass:[NSDictionary class]] ? metadata[@"assetIndex"] : nil;
-    NSString *assetIndexPath = nil;
     if (ai[@"id"]) {
-        assetIndexPath = [gameDir stringByAppendingPathComponent:
-                          [NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
+        NSString *assetIndexPath = [gameDir stringByAppendingPathComponent:
+                                    [NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
         if (![fm fileExistsAtPath:assetIndexPath]) {
             id aiUrl = ai[@"url"];
             if (![aiUrl isKindOfClass:[NSString class]] || [(NSString *)aiUrl length] == 0) {
                 // 无 URL ⇒ 下载器也取不回来：判为不适用，不算缺件
                 NSLog(@"[MISS] skip=assets/indexes/%@.json reason=not_applicable(no_url)", ai[@"id"]);
-                assetIndexPath = nil;
             } else {
+                NSLog(@"[MISS-SET] required(6/asset-index)=assets/indexes/%@.json", ai[@"id"]);
                 [missing addObject:[NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
             }
         }
     }
 
-    // ④ 资源对象抽样（前 100 个）：捕获“assets 完全/大面积没落”的安装中断，
-    //    同时避免每次重试都全量 stat 上千文件（性能与门禁严格度折中）。
-    if (assetIndexPath && [fm fileExistsAtPath:assetIndexPath]) {
-        NSMutableDictionary *indexObj = parseJSONFromFile(assetIndexPath);
-        NSDictionary *objects = [indexObj[@"objects"] isKindOfClass:[NSDictionary class]] ? indexObj[@"objects"] : nil;
-        BOOL mapToResources = [indexObj[@"map_to_resources"] boolValue];
-        if (objects.count > 0) {
-            NSUInteger checked = 0, missingAssets = 0;
-            NSMutableArray<NSString *> *missingAssetSamples = [NSMutableArray array];
-            for (NSString *name in objects) {
-                if (checked >= 100) break;
-                // ★ [MISS][ASSET-LIST] 与下载器同款排除：本平台永不下载的对象不算缺件
-                if ([MinecraftResourceUtils assetObjectExcludedOnThisPlatform:name]) {
-                    NSLog(@"[MISS] skip=%@ reason=not_applicable(asset-excluded)", name);
-                    continue;
-                }
-                NSDictionary *o = objects[name];
-                NSString *hash = [o isKindOfClass:[NSDictionary class]] ? o[@"hash"] : nil;
-                if (![hash isKindOfClass:[NSString class]] || hash.length < 2) continue;
-                checked++;
-                NSString *op = mapToResources
-                    ? [gameDir stringByAppendingPathComponent:[@"resources" stringByAppendingPathComponent:name]]
-                    : [gameDir stringByAppendingPathComponent:
-                       [NSString stringWithFormat:@"assets/objects/%@/%@", [hash substringToIndex:2], hash]];
-                if (![fm fileExistsAtPath:op]) {
-                    missingAssets++;
-                    // ★ [MISS] 记下前几个缺失对象名 ⇒ 日志/弹窗能一眼指出「到底缺哪一个」
-                    //（26.2 原版实例点名的那个假缺件就是 icons/minecraft.icns，见 _MISSING_FILES.md）
-                    if (missingAssetSamples.count < 3) [missingAssetSamples addObject:name];
-                }
-            }
-            if (missingAssets > 0) {
-                [missing addObject:[NSString stringWithFormat:@"assets(抽样 %lu/%lu: %@)",
-                                    (unsigned long)missingAssets, (unsigned long)checked,
-                                    [missingAssetSamples componentsJoinedByString:@", "]]];
-            }
+    // ⑦ LWJGL jar 集（该 MC 版本对应的那份）。
+    //   ★ 判据与 JavaLauncher.ResolveLwjglVersion 一致：profile 显式 333/341 优先；
+    //   否则 MC 主版本 ≥26 ⇒ 341（SDL3），其余 ⇒ 333。jar 由 JavaLauncher 以
+    //   <App>/libs/lwjgl-<ver>/* 加进 classpath，缺失即 G18 启动失败。
+    NSString *lwjglVer = ameMissSetResolveLwjglVersion([PLProfiles resolveKeyForCurrentProfile:@"lwjglVersion"], vid);
+    NSString *lwjglDir = [NSString stringWithFormat:@"%@/libs/lwjgl-%@", NSBundle.mainBundle.bundlePath, lwjglVer];
+    BOOL lwjglIsDir = NO;
+    if (!([fm fileExistsAtPath:lwjglDir isDirectory:&lwjglIsDir] && lwjglIsDir)) {
+        NSLog(@"[MISS-SET] required(7/lwjgl) dir missing: %@", lwjglDir);
+        [missing addObject:[NSString stringWithFormat:@"libs/lwjgl-%@/", lwjglVer]];
+    } else {
+        BOOL hasJar = NO;
+        for (NSString *f in [fm contentsOfDirectoryAtPath:lwjglDir error:nil]) {
+            if ([f hasSuffix:@".jar"]) { hasJar = YES; break; }
+        }
+        if (!hasJar) {
+            NSLog(@"[MISS-SET] required(7/lwjgl) dir has no jar: %@", lwjglDir);
+            [missing addObject:[NSString stringWithFormat:@"libs/lwjgl-%@/*.jar", lwjglVer]];
         }
     }
 
