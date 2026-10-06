@@ -228,7 +228,8 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     }
 
     /* 文字颜色：背景图模式下用白字保证对比度；系统背景模式下用 labelColor */
-    BOOL hasBg = [[BackgroundManager sharedManager] hasBackground];
+    // ★ [GLASS-BG] 原生风格 ⇒ 面已实底,不按壁纸取白字(原 hasBackground 口径在实底上会不可读)
+    BOOL hasBg = [[BackgroundManager sharedManager] hasUIVisibleBackground];
     UIColor *primaryText = hasBg ? [UIColor whiteColor] : [UIColor labelColor];
     UIColor *secondaryText = hasBg ? [UIColor colorWithWhite:1.0 alpha:0.8] : [UIColor secondaryLabelColor];
     UIColor *tertiaryText = hasBg ? [UIColor colorWithWhite:1.0 alpha:0.7] : [UIColor tertiaryLabelColor];

@@ -1466,7 +1466,7 @@
     [self setupHeroHeader];
 
     // Apply transparent background if global background is active
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         self.view.backgroundColor = [UIColor clearColor];
         self.tableView.backgroundColor = [UIColor clearColor];
         self.tableView.backgroundView = nil;
@@ -1707,7 +1707,7 @@
     }
 
     // Re-apply transparency when appearing (in case background was just set)
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         self.view.backgroundColor = [UIColor clearColor];
         self.tableView.backgroundColor = [UIColor clearColor];
         self.tableView.backgroundView = nil;
@@ -1895,7 +1895,7 @@
     [self applySettingsAppStyleToCell:cell indexPath:indexPath];
 
     // Apply background styling if global background is active
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         // Set semi-transparent dark background for cells
         [[BackgroundManager sharedManager] applyEffectToCell:cell];
 
@@ -2107,7 +2107,7 @@
 
 - (void)tableView:(UITableView *)tableView willDisplayHeaderView:(UIView *)view forSection:(NSInteger)section {
     // Style section headers for background visibility
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
             UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
             header.textLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
@@ -2151,7 +2151,7 @@
 
 - (void)tableView:(UITableView *)tableView willDisplayFooterView:(UIView *)view forSection:(NSInteger)section {
     // Style section footers for background visibility
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
             UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)view;
             footer.textLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]

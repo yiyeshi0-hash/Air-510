@@ -2009,7 +2009,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
 
         // 适配自定义背景
-        if ([[BackgroundManager sharedManager] hasBackground]) {
+        if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
             cell.textLabel.textColor = [UIColor whiteColor];
             cell.detailTextLabel.textColor = [UIColor whiteColor];
         } else {
@@ -2050,7 +2050,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
 
         // 适配自定义背景
-        if ([[BackgroundManager sharedManager] hasBackground]) {
+        if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
             cell.textLabel.textColor = [UIColor whiteColor];
             cell.detailTextLabel.textColor = [UIColor whiteColor];
         } else {
@@ -2086,7 +2086,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
     cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
 
     // 适配自定义背景
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.textColor = [UIColor whiteColor];
     } else {
@@ -2109,7 +2109,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.textLabel.font = [UIFont systemFontOfSize:14];
         // 适配自定义背景
-        if ([[BackgroundManager sharedManager] hasBackground]) {
+        if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
             cell.textLabel.textColor = [UIColor whiteColor];
         } else {
             cell.textLabel.textColor = [UIColor secondaryLabelColor];
@@ -2177,7 +2177,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
     cell.accessoryView = actionButton;
 
     // 适配自定义背景
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.textColor = [UIColor whiteColor];
     } else {
@@ -2273,7 +2273,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         }
 
         // 适配自定义背景
-        BOOL hasBackground = [[BackgroundManager sharedManager] hasBackground];
+        BOOL hasBackground = [[BackgroundManager sharedManager] hasUIVisibleBackground];   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
         if (hasBackground) {
             self.directIPField.textColor = [UIColor whiteColor];
             self.directPortField.textColor = [UIColor whiteColor];
@@ -2294,7 +2294,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         cell.textLabel.textAlignment = NSTextAlignmentCenter;
         cell.textLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightSemibold];
         // 适配自定义背景
-        if ([[BackgroundManager sharedManager] hasBackground]) {
+        if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
             cell.textLabel.textColor = [UIColor whiteColor];
         } else {
             cell.textLabel.textColor = [UIColor systemBlueColor];
@@ -2360,7 +2360,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
     }
 
     // 适配自定义背景
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.textColor = [UIColor whiteColor];
     } else {
@@ -2442,7 +2442,7 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
     cell.imageView.image = dotImage;
 
     // 适配自定义背景
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 实底,不按壁纸取白字
         cell.textLabel.textColor = [UIColor whiteColor];
         cell.detailTextLabel.textColor = [UIColor whiteColor];
     } else {

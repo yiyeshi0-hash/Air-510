@@ -104,6 +104,10 @@ FOUNDATION_EXPORT UIColor * _Nullable AMEForegroundShadowColor(void);
 
 // Check if has background
 - (BOOL)hasBackground;
+/// ★ [GLASS-BG] 「本风格下壁纸是否可见」= hasBackground 且 实际生效风格=液态玻璃。
+///   用户拍板「如果是原生就不透」⇒ 原生风格(含 iOS<26 强制原生)下页面/面板/行一律实底,
+///   壁纸不参与 UI。各处「按壁纸透明化 / 按壁纸取前景色」的分支请用这一条,别用 hasBackground。
+- (BOOL)hasUIVisibleBackground;
 - (BOOL)hasImageBackground;
 - (BOOL)hasVideoBackground;
 

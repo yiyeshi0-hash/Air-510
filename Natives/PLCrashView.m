@@ -160,11 +160,13 @@ static NSString *const kGitHubIssuesURL = @"https://github.com/herbrine8403/Amet
 
 - (void)setupBackground {
     // 适配自定义背景壁纸：让 BackgroundManager 的全局背景透出
-    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+    // ★ [GLASS-BG] 清底必须【在】makeViewControllerTransparent:【之前】—— 后者在原生风格下会把页面
+    //   设成实底不透明(systemBackgroundColor);若清底随后执行,会把那条 guard 抵消(又变回透明页)。
     self.view.backgroundColor = [UIColor clearColor];
+    [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
 
-    // 如果没有自定义背景，使用系统材质毛玻璃作为回退（自适应深浅色）
-    if (![[BackgroundManager sharedManager] hasBackground]) {
+    // 如果没有【可见的】自定义背景(且不是原生风格),使用系统材质毛玻璃作为回退(自适应深浅色)
+    if (![[BackgroundManager sharedManager] hasUIVisibleBackground] && !AMEGlassStyleUsesNativeAppearance()) {
         UIBlurEffect *blurEffect;
         if (@available(iOS 13.0, *)) {
             // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect

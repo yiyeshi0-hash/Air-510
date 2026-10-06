@@ -137,14 +137,14 @@ static NSInteger const kSectionVersions    = 1;
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont systemFontOfSize:titleFont weight:UIFontWeightSemibold];
-    self.titleLabel.textColor = ([[BackgroundManager sharedManager] hasBackground] ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor whiteColor]);   // ★ [BG-CONTRAST]
+    self.titleLabel.textColor = ([[BackgroundManager sharedManager] hasUIVisibleBackground] ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor labelColor]);   // ★ [BG-CONTRAST] ★ [GLASS-BG] 原生风格 ⇒ 面已实底,走语义色(原为 whiteColor:那是给“深色渐变底”用的,实底上会看不见)
     self.titleLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.titleLabel];
 
     self.subtitleLabel = [[UILabel alloc] init];
     self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.subtitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:10] weight:UIFontWeightRegular];
-    self.subtitleLabel.textColor = ([[BackgroundManager sharedManager] hasBackground] ? AMEForegroundColor(AMEForegroundRoleSecondary) : [[UIColor whiteColor] colorWithAlphaComponent:0.6]);   // ★ [BG-CONTRAST]
+    self.subtitleLabel.textColor = ([[BackgroundManager sharedManager] hasUIVisibleBackground] ? AMEForegroundColor(AMEForegroundRoleSecondary) : [UIColor secondaryLabelColor]);   // ★ [BG-CONTRAST] ★ [GLASS-BG] 同上
     self.subtitleLabel.numberOfLines = 0;
     self.subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
     self.subtitleLabel.adjustsFontForContentSizeCategory = NO;

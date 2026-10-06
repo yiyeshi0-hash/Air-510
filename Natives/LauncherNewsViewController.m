@@ -2490,7 +2490,7 @@ static NSString *festivalGreeting(void) {
     nav.modalPresentationStyle = UIModalPresentationFormSheet;
     
     // 毛玻璃背景
-    if ([[BackgroundManager sharedManager] hasBackground]) {
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
         nav.view.backgroundColor = [UIColor clearColor];
     }
     

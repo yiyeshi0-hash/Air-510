@@ -2516,8 +2516,9 @@ static NSString * localizeProfileTitle(NSString *title) {
         // 清理旧 backgroundView（避免叠加）
         tv.backgroundView = nil;
 
-        if ([[BackgroundManager sharedManager] hasBackground]) {
-            // 有自定义背景：使用毛玻璃 backgroundView 模糊背景并遮挡栈底 VC
+        // ★ [GLASS-BG] 原生风格 ⇒ 行/页已实底,这里不再铺毛玻璃 backgroundView(否则读作“透”);
+        //   走下面的 else 分支 = 不透明 systemBackground 底。([BG-CONTRAST] 的前景逻辑不受影响)
+        if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {
             UIBlurEffect *blur;
             if (@available(iOS 13.0, *)) {
                 // ★ [GLASS-LIQUID] 走风格层:iOS≥26 ⇒ 系统 UIGlassEffect
