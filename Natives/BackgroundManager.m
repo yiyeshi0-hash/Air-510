@@ -2037,6 +2037,10 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 //   「变更后按当前开关重判全树」的动作。关着 / 设置页 ⇒ 一律摘除。
 - (void)ameReassertRimPolicyOnAllWindows {
     [self ameSyncGlassRimStrengthForCurrentStyle];   // ★ 先把 TU 内强度按风格收敛(与总闸同口径)
+    // ★ [NO-RIM] 自证日志(ASCII ⇒ 进 UTF-8 串表,三编码扫均可命中):背景(壁纸)变更 / 回前台 ⇒
+    //   按当前开关/风格/设置页重判一次全窗自绘高光。
+    NSLog(@"[NO-RIM] rim policy reassert on bg-change/foreground: allowed=%d strength=%.2f",
+          (int)AmeGlassRimDrawingAllowed(), (double)AmeGlassRimStrengthResolved());
     dispatch_async(dispatch_get_main_queue(), ^{
         for (UIWindow *w in [UIApplication sharedApplication].windows) {
             [self ameApplyGlassRimSettingsToViewTree:w];
