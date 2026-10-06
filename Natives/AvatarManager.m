@@ -1,0 +1,283 @@
+#import "utils.h"
+#import "AvatarManager.h"
+
+@interface AvatarManager()
+@property (nonatomic, strong) NSFileManager *fileManager;
+@property (nonatomic, strong) NSString *documentsDirectory;
+@property (nonatomic, strong) NSString *avatarsDirectory;
+@end
+
+@implementation AvatarManager
+
++ (instancetype)sharedManager {
+    static AvatarManager *sharedInstance = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sharedInstance = [[AvatarManager alloc] init];
+    });
+    return sharedInstance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        self.fileManager = [NSFileManager defaultManager];
+        NSArray *paths = [self.fileManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
+        self.documentsDirectory = [paths.firstObject path];
+        self.avatarsDirectory = [self.documentsDirectory stringByAppendingPathComponent:@"avatars"];
+        if (![self.fileManager fileExistsAtPath:self.avatarsDirectory]) {
+            [self.fileManager createDirectoryAtPath:self.avatarsDirectory
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                   error:nil];
+        }
+    }
+    return self;
+}
+
+/// 将 accountName 转换为安全的文件名（移除路径分隔符等非法字符）。
+/// Minecraft 用户名通常为字母数字下划线，但仍做一层防护避免路径穿越。
+- (NSString *)safeFileNameForAccount:(NSString *)accountName {
+    if (accountName.length == 0) return @"anonymous";
+    NSCharacterSet *invalid = [NSCharacterSet characterSetWithCharactersInString:@"/\\:*?\"<>|"];
+    NSArray *parts = [accountName componentsSeparatedByCharactersInSet:invalid];
+    NSString *cleaned = [parts componentsJoinedByString:@"_"];
+    if (cleaned.length == 0) cleaned = @"anonymous";
+    return cleaned;
+}
+
+- (NSString *)avatarPathForAccount:(NSString *)accountName {
+    NSString *fileName = [self safeFileNameForAccount:accountName];
+    return [self.avatarsDirectory stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.png", fileName]];
+}
+
+- (void)saveAvatarForAccount:(NSString *)accountName
+                     image:(UIImage *)image
+          withCompletion:(void (^)(BOOL, NSError * _Nullable))completion {
+    if (accountName.length == 0) {
+        if (completion) {
+            completion(NO, [NSError errorWithDomain:@"AvatarError" code:1001 userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_46", nil)}]);
+        }
+        return;
+    }
+    NSData *imageData = UIImagePNGRepresentation(image);
+    if (!imageData) {
+        if (completion) {
+            completion(NO, [NSError errorWithDomain:@"AvatarError" code:1002 userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_47", nil)}]);
+        }
+        return;
+    }
+    NSString *path = [self avatarPathForAccount:accountName];
+    NSError *error;
+    BOOL success = [imageData writeToURL:[NSURL fileURLWithPath:path] options:NSDataWritingAtomic error:&error];
+    if (completion) {
+        completion(success, error);
+    }
+}
+
+- (UIImage *)avatarForAccount:(NSString *)accountName {
+    if (accountName.length == 0) return nil;
+    NSString *path = [self avatarPathForAccount:accountName];
+    if (![self.fileManager fileExistsAtPath:path]) return nil;
+    return [UIImage imageWithContentsOfFile:path];
+}
+
+- (BOOL)hasCustomAvatarForAccount:(NSString *)accountName {
+    if (accountName.length == 0) return NO;
+    return [self.fileManager fileExistsAtPath:[self avatarPathForAccount:accountName]];
+}
+
+- (void)removeAvatarForAccount:(NSString *)accountName {
+    if (accountName.length == 0) return;
+    NSString *path = [self avatarPathForAccount:accountName];
+    if ([self.fileManager fileExistsAtPath:path]) {
+        [self.fileManager removeItemAtPath:path error:nil];
+    }
+}
+
+#pragma mark - ★ [PRISMA-GAP] Task180/169/185（灵感：Prisma Natives/AvatarManager.m）
+
+- (UIImage *)avatarForAccount:(NSString *)accountName
+             usernameFallback:(NSString *)username {
+    // Task180：accountId 优先，miss 且 username 非空时按 username 兑底
+    //（兼容历史按 username 存盘的头像文件；账号 ID 漂移后旧文件仍可命中）
+    UIImage *image = [self avatarForAccount:accountName];
+    if (!image && username.length > 0 && ![username isEqualToString:accountName]) {
+        image = [self avatarForAccount:username];
+        if (image) {
+            NSLog(@"[Task180] avatar hit via username fallback (%@ -> %@)", accountName, username);
+        }
+    }
+    return image;
+}
+
+- (void)ame180_migrateAvatarFromAccount:(NSString *)oldAccount
+                              toAccount:(NSString *)newAccount {
+    // Task180：账号 ID 漂移（refresh 链改写 accountId）时头像文件随迁；
+    // 仅当旧存在且新不存在时搬移（幂等防覆盖）。
+    if (oldAccount.length == 0 || newAccount.length == 0 || [oldAccount isEqualToString:newAccount]) return;
+    NSString *oldPath = [self avatarPathForAccount:oldAccount];
+    NSString *newPath = [self avatarPathForAccount:newAccount];
+    if ([self.fileManager fileExistsAtPath:oldPath] &&
+        ![self.fileManager fileExistsAtPath:newPath]) {
+        NSError *error = nil;
+        BOOL ok = [self.fileManager moveItemAtPath:oldPath toPath:newPath error:&error];
+        NSLog(@"[Task180] avatar migrated %@ -> %@ (%@)", oldAccount, newAccount, ok ? @"ok" : error.localizedDescription);
+    }
+}
+
+#pragma mark - Task169：网络头像获取（超时受控 + 磁盘缓存）
+
+/// 网络头像的磁盘缓存目录（按 URL 哈希存原始字节，Caches 下系统可回收）。
+- (NSString *)ame169_urlCacheDirectory {
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"Ame169RemoteAvatars"];
+    if (![self.fileManager fileExistsAtPath:dir]) {
+        [self.fileManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    }
+    return dir;
+}
+
+- (NSString *)ame169_cachePathForURL:(NSString *)urlString {
+    // 简单稳定哈希（djb2）——缓存文件名只需唯一可复现，不需要密码学强度
+    unsigned long long h = 5381;
+    for (NSUInteger i = 0; i < urlString.length; i++) {
+        h = ((h << 5) + h) + [urlString characterAtIndex:i];
+    }
+    return [[self ame169_urlCacheDirectory] stringByAppendingPathComponent:[NSString stringWithFormat:@"avatar_%llu.img", h]];
+}
+
+/// Task169：网络头像获取（10s 超时 + 磁盘缓存 + 失败日志）。
+/// 病历（装机）：旧实现 NSData dataWithContentsOfURL 默认 60s 挂起、失败完全
+/// 静默、无任何持久化——头像域在弱网下，主页顶卡长时间默认头像，网络恰好
+/// 完成后才因下次刷新显示（用户感知成"点一下才有"）。
+/// 契约：completion 恰好回调一次（主线程），参数 = 最佳可用图片
+/// （磁盘缓存 > 网络 > nil）。磁盘命中后仍在后台刷新缓存（不双回调）。
+- (void)fetchAvatarFromURL:(NSString *)urlString
+                completion:(void (^)(UIImage * _Nullable))completion {
+    if (![urlString isKindOfClass:NSString.class] || urlString.length == 0) {
+        if (completion) completion(nil);
+        return;
+    }
+    NSString *cachePath = [self ame169_cachePathForURL:urlString];
+    NSData *cached = [self.fileManager contentsAtPath:cachePath];
+    UIImage *cachedImage = cached ? [UIImage imageWithData:cached] : nil;
+    if (cachedImage) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(cachedImage);
+        });
+        // 后台静默刷新（成功仅更新缓存，不再回调）
+        [self ame169_networkFetchAvatar:urlString cachePath:cachePath completion:nil];
+        return;
+    }
+    [self ame169_networkFetchAvatar:urlString cachePath:cachePath completion:^(UIImage *img) {
+        if (completion) completion(img);
+    }];
+}
+
+- (void)ame169_networkFetchAvatar:(NSString *)urlString
+                        cachePath:(NSString *)cachePath
+                       completion:(void (^)(UIImage * _Nullable))completion {
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) {
+        // Task172：坏 URL 路径也必须回主线程（契约：completion 恰好一次、永远在主线程）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(nil);
+        });
+        return;
+    }
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.timeoutInterval = 10.0;  // Task169：受控超时（旧实现默认 60s 挂起）
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            // Task169：失败必须有日志（旧实现静默，装机日志零痕迹）
+            NSLog(@"[AvatarManager] Task169 avatar fetch failed (%@): %@",
+                  urlString.lastPathComponent ?: urlString, error.localizedDescription);
+            // Task172：失败路径同样回主线程——在 NSURLSession 回调线程里直接调
+            // completion 会让消费方在非主线程触碰 UIKit，更新静默失效。
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (completion) completion(nil);
+            });
+            return;
+        }
+        UIImage *img = data ? [UIImage imageWithData:data] : nil;
+        if (img && data) {
+            [data writeToFile:cachePath atomically:YES];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(img);
+        });
+    }];
+    [task resume];
+}
+
+/// Task185：带账号上下文的头像获取链（三层回退）。
+/// 每层都走 fetchAvatarFromURL（自带磁盘缓存 + 10s 超时 + 主线程回调契约），
+/// 失败逐层下探；全部失败回调 nil（调用方显示占位头像）。
+- (void)ame185_fetchAvatarForAuthData:(NSDictionary *)authData
+                           completion:(void (^)(UIImage * _Nullable))completion {
+    if (![authData isKindOfClass:NSDictionary.class]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil); });
+        return;
+    }
+    // 第①层：保存的 profilePicURL（跳过 "(null)"/"(nil)" 脏数据形态）
+    NSString *ame185_primary = authData[@"profilePicURL"];
+    if ([ame185_primary isKindOfClass:NSString.class] &&
+        ([ame185_primary containsString:@"(null)"] || [ame185_primary containsString:@"(nil)"])) {
+        ame185_primary = nil;
+    }
+    // 第②层：crafatar 按正版 UUID 渲染皮肤头（正版账号真皮肤，带 overlay）
+    NSString *ame185_uuid = authData[@"profileId"];
+    BOOL ame185_hasUuid = [ame185_uuid isKindOfClass:NSString.class] && ame185_uuid.length == 36 &&
+        ![ame185_uuid isEqualToString:@"00000000-0000-0000-0000-000000000000"];
+    // 第③层：minotar 按 username
+    NSString *ame185_user = authData[@"username"];
+
+    void (^ame185_done)(UIImage *) = ^(UIImage *img) {
+        if (completion) completion(img);
+    };
+    void (^ame185_tryMinotar)(void) = ^{
+        if (![ame185_user isKindOfClass:NSString.class] || ame185_user.length == 0 ||
+            [ame185_user hasPrefix:@"Demo."]) {
+            NSLog(@"[AvatarManager] Task185 avatar chain exhausted (no usable username)");
+            dispatch_async(dispatch_get_main_queue(), ^{ ame185_done(nil); });
+            return;
+        }
+        NSString *ame185_url = [NSString stringWithFormat:@"https://minotar.net/helm/%@/120.png", ame185_user];
+        [self fetchAvatarFromURL:ame185_url completion:^(UIImage *img) {
+            if (!img) NSLog(@"[AvatarManager] Task185 avatar chain: minotar also failed (user=%@)", ame185_user);
+            ame185_done(img);
+        }];
+    };
+    void (^ame185_tryCrafatar)(void) = ^{
+        if (!ame185_hasUuid) {
+            ame185_tryMinotar();
+            return;
+        }
+        NSString *ame185_url = [NSString stringWithFormat:@"https://crafatar.com/renders/head/%@?overlay&size=120", ame185_uuid];
+        [self fetchAvatarFromURL:ame185_url completion:^(UIImage *img) {
+            if (!img) {
+                NSLog(@"[AvatarManager] Task185 avatar chain: crafatar failed, falling to minotar");
+                ame185_tryMinotar();
+            } else {
+                ame185_done(img);
+            }
+        }];
+    };
+    if ([ame185_primary isKindOfClass:NSString.class] && ame185_primary.length > 0) {
+        NSString *ame185_fixed = [ame185_primary stringByReplacingOccurrencesOfString:@"\\/" withString:@"/"];
+        [self fetchAvatarFromURL:ame185_fixed completion:^(UIImage *img) {
+            if (!img) {
+                NSLog(@"[AvatarManager] Task185 avatar chain: primary failed (%@), falling to crafatar", ame185_primary.lastPathComponent);
+                ame185_tryCrafatar();
+            } else {
+                ame185_done(img);
+            }
+        }];
+    } else {
+        ame185_tryCrafatar();
+    }
+}
+
+@end

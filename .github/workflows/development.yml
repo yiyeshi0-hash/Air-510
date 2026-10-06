@@ -1,0 +1,222 @@
+# build via GitHub Actions (fork of herbrine8403/Amethyst-iOS-MyRemastered)
+name: Development build
+
+on:
+  pull_request:
+    branches-ignore:
+      - 'l10n_main'
+    types: [opened, reopened, synchronize]
+  push:
+    branches-ignore:
+      - 'l10n_main'
+  workflow_dispatch:
+
+# 并发控制：同一分支/PR 新的推送会取消仍在排队或运行的旧构建。
+# 这能显著缓解 macos-14 runner 供应紧张导致的"一直卡在队列中"问题：
+# 开发中频繁 push 时，旧构建被立即取消，runner 资源让给最新提交。
+# workflow_dispatch 手动触发也纳入同一组，避免与自动触发互相堆积。
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Development build
+    strategy:
+      matrix:
+        include:
+          - platform: 2
+            platform_name: ios
+
+    # ★ 换 runner:macos-14 上不了 Xcode 26(它要求 macOS 15.5+),
+    #   而 iOS 26 的液态玻璃只有用 iOS 26 SDK 构建才会生效。
+    #   找不到 Xcode 26 时下面的步骤会回退到 15.4,构建仍可用(只是没有新外观)。
+    runs-on: macos-15
+
+    steps:
+      - name: Select Xcode (prefer 26+ for iOS 26 Liquid Glass, fallback 15.4)
+        run: |
+          echo "== 可用 Xcode =="
+          ls -d /Applications/Xcode*.app 2>/dev/null || true
+          echo "== 默认 =="
+          xcodebuild -version || true
+          # 选最新的 Xcode ≥ 26(液态玻璃需要 iOS 26 SDK);找不到就退 15.4。
+          PICK=""
+          for app in $(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V -r); do
+            PICK="$app"; break
+          done
+          if [ -z "$PICK" ]; then
+            for app in $(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V -r); do
+              v=$(basename "$app" | sed -E 's/Xcode_?([0-9]+).*/\1/')
+              if [ -n "$v" ] && [ "$v" -ge 26 ] 2>/dev/null; then PICK="$app"; break; fi
+            done
+          fi
+          if [ -n "$PICK" ]; then
+            sudo xcode-select -s "$PICK/Contents/Developer"
+            echo "★ 选用 $PICK"
+          else
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+            echo "★ 未找到 Xcode 26,回退 15.4(本包不含 iOS 26 新外观)"
+          fi
+          xcodebuild -version || true
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo '?')
+          SDKPATH_REAL=$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || echo '')
+          echo "★ iPhoneOS SDK = $SDK"
+          echo "★ SDKPATH = $SDKPATH_REAL"
+          # ★ 关键:Makefile 里是 SDKPATH ?= ...(?= 不覆盖已有值),
+          #   若环境里带着旧的 SDKPATH,或者 CMake 缓存了旧 CMAKE_OSX_SYSROOT,
+          #   就会【用旧 SDK 编译】—— 那样打包出来的 App 拿不到 iOS 26 新外观。
+          #   这里显式写入 GITHUB_ENV,强制后续所有步骤用同一个 SDK。
+          echo "SDKPATH=$SDKPATH_REAL" >> "$GITHUB_ENV"
+          echo "DEVELOPER_DIR=$(xcode-select -p)" >> "$GITHUB_ENV"
+          echo "★ 已写入 GITHUB_ENV:SDKPATH / DEVELOPER_DIR"
+
+      - name: Install GNU Make
+        run: |
+          brew update
+          brew install make
+
+      - name: Install Java 8 (Temurin) via Homebrew
+        run: |
+          brew install --cask temurin@8 || true
+
+      - name: Install ldid
+        run: |
+          brew install ldid || true
+
+      - name: Remove work folders
+        run: |
+          echo "before"
+          ls -lah ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          echo "after"
+          ls -lah ./
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # [fix] 上游的 "Remove stale MobileGL gitlink" 在本 fork 上会让 MobileGlues 内容丢失,
+      # 导致 dep_mg 的 CMake 报 "MobileGlues-cpp does not exist"。这里不删,直接跳过。
+      - name: Checkout repository submodules
+        env:
+          # MobileGL 上游 LFS 配额已用尽，其 LFS 文件（tools/trace_replay/fixtures）
+          # 与 iOS 构建无关，跳过 smudge 避免 submodule checkout 失败 exit 128
+          GIT_LFS_SKIP_SMUDGE: "1"
+        run: git submodule update --init --recursive
+
+      # ==== [speed] 依赖缓存 / ccache(由 yiyeshi0-hash 添加,提速 CI)====
+      - name: Cache heavy 3rd-party builds (MobileGlues / glslang / SPIRV-Cross / LTW / SFPEW)
+        uses: actions/cache@v4
+        with:
+          path: |
+            Natives/build/mobileglues
+            Natives/build/mobileglues/3rdparty
+            Natives/build/sfpew
+            Natives/external/LTW/ltw/src/main/tinywrapper
+          key: dep3rd-${{ runner.os }}-xcodeauto-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            dep3rd-${{ runner.os }}-
+
+      - name: Cache JRE and game assets downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            Natives/build/java_runtimes
+            Natives/build/assets
+            ~/Library/Caches/Amethyst
+          key: jre-assets-${{ runner.os }}-xcodeauto-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            jre-assets-${{ runner.os }}-
+
+      # ==== [cache-proof] 缓存命中证据(每次打印)====
+      - name: Cache evidence
+        run: |
+          echo "==== cache state ===="
+          for d in Natives/build/mobileglues Natives/build/sfpew Natives/build/java_runtimes Natives/build/assets; do
+            if [ -d "$d" ]; then
+              echo "HIT  $d : $(find "$d" -type f 2>/dev/null | wc -l) files, $(du -sh "$d" 2>/dev/null | cut -f1)"
+              echo "     newest: $(find "$d" -type f -newermt '-10 minutes' 2>/dev/null | wc -l) files touched in last 10min"
+            else
+              echo "MISS $d (absent)"
+            fi
+          done
+          echo "====================="
+      - name: Purge stale CMake/build caches (force re-resolve with the selected SDK)
+        run: |
+          # ★ 旧构建缓存会记住 CMAKE_OSX_SYSROOT。换 Xcode/SDK 后必须让它重新解析,
+          #   否则 CMake 继续沿用旧 SDK 编译 —— 产物就不会采用 iOS 26 的外观
+          #   (证据:上一版产物 LC_BUILD_VERSION 里 SDK=16.0,而选中的是 26.3)。
+          rm -rf build Natives/build JavaApp/build 2>/dev/null || true
+          echo "★ 已清理 build 目录 ⇒ 下次 configure 会按当前 Xcode 重新探测 SDK"
+          echo "★ 当前 SDKPATH=${SDKPATH:-未设置}"
+          echo "★ DEVELOPER_DIR=${DEVELOPER_DIR:-未设置}"
+
+      - name: Build for ${{ matrix.platform_name }}
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: 14.0
+          CONFIG_CURSEFORGE_API_KEY: ${{ secrets.CONFIG_CURSEFORGE_API_KEY }}
+          CMAKE_VERBOSE_MAKEFILE: "ON"
+          VERBOSE: "1"
+        run: |
+          set -o pipefail
+          export PATH=/opt/homebrew/bin:$PATH
+          export SLIMMED=0
+
+          if [ "${{ matrix.platform_name }}" == "ios" ]; then
+            gmake -j1 dsym package PLATFORM=${{ matrix.platform }}
+
+            gmake -j1 dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
+
+          elif [ "${{ matrix.platform_name }}" == "tvos" ]; then
+            gmake -j1 dsym package PLATFORM=${{ matrix.platform }} TROLLSTORE_JIT_ENT=1
+
+          else
+            gmake -j1 dsym package PLATFORM=${{ matrix.platform }}
+          fi
+
+      - name: Verify the built binary really used the iOS 26 SDK
+        run: |
+          # ★ 自证:读主二进制 LC_BUILD_VERSION 的 sdk 字段。26.x ⇒ 真用了 26 SDK。
+          BIN=$(find . -path '*Payload/*.app' -type d 2>/dev/null | head -1)
+          APP=$(find . -name 'AngelAuraAmethyst' -type f 2>/dev/null | head -1)
+          echo "★ app=$BIN bin=$APP"
+          if [ -n "$APP" ]; then
+            python3 - "$APP" <<'PY'
+          import struct, sys
+          b = open(sys.argv[1], 'rb').read()
+          if b[:4] != b'\xcf\xfa\xed\xfe':
+              print('★ 不是 Mach-O'); raise SystemExit
+          n = struct.unpack_from('<I', b, 16)[0]; off = 32
+          for _ in range(n):
+              cmd, cs = struct.unpack_from('<II', b, off)
+              if cmd == 0x32:
+                  plat, minos, sdk = struct.unpack_from('<III', b, off+8)
+                  f = lambda v: '%d.%d.%d' % (v>>16&0xff, v>>8&0xff, v&0xff)
+                  print('★★ LC_BUILD_VERSION: minOS=%s  SDK=%s' % (f(minos), f(sdk)))
+                  print('★★ SDK>=26 ⇒ 液态玻璃生效; 若显示 16/18 ⇒ SDK 没用上 26,需修构建')
+                  break
+              off += cs
+          PY
+          fi
+
+      - name: Upload regular ipa
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: com.air-devs.air-${{ matrix.platform_name }}.ipa
+          path: artifacts/com.air-devs.air-*-${{ matrix.platform_name }}.ipa
+
+      - name: Upload regular tipa
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: com.air-devs.air-${{ matrix.platform_name }}-trollstore.tipa
+          path: artifacts/com.air-devs.air-*-${{ matrix.platform_name }}-trollstore.tipa
+
+      - name: Upload PojavLauncher.dSYM
+        if: matrix.platform_name == 'ios' && success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AngelAuraAmethyst.dSYM
+          path: artifacts/AngelAuraAmethyst.dSYM

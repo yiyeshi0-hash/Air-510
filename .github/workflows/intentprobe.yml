@@ -1,0 +1,63 @@
+name: intentprobe
+on: [workflow_dispatch]
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: select-xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: env
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - name: install-xcodegen
+        run: brew install xcodegen
+      - name: build
+        working-directory: intentprobe
+        run: |
+          xcodegen generate
+          xcodebuild -project IntentProbe.xcodeproj -scheme IntentProbe -sdk iphoneos -configuration Debug CODE_SIGNING_ALLOWED=NO build 2>&1 | tee build.log | tail -8
+      - name: evidence
+        working-directory: intentprobe
+        run: |
+          exec > >(tee -a build.log) 2>&1
+          echo "########## A. const/gather 相关参数 ##########"
+          grep -o -- "-emit-const-values[^ ]*" build.log | head -3 || true
+          grep -o -- "-const-gather-protocols-file" build.log | head -3 || true
+          echo "########## B. 协议清单文件路径 ##########"
+          grep -o -- "/Users/runner/[^ \"']*" build.log | grep -i -E "gather|protocol|const" | sort -u | head -10 || true
+          echo "########## C. 该文件内容 ##########"
+          for p in $(grep -o -- "/Users/runner/[^ \"']*" build.log | grep -i -E "gather|protocol|const" | sort -u | head -5); do
+            echo "=== CAT $p ==="
+            echo "--- $p ---"
+            cat "$p" 2>/dev/null | head -80 || true
+            echo
+          done
+          echo "########## D. DerivedData 里的 txt 清单 ##########"
+          find ~/Library/Developer/Xcode/DerivedData -name "*.txt" 2>/dev/null | head -25 || true
+          for p in $(find ~/Library/Developer/Xcode/DerivedData -name "*.txt" 2>/dev/null | head -25); do
+            echo "--- $p ($(wc -c < "$p") B) ---"; head -c 400 "$p"; echo
+          done
+          echo "########## E. Metadata.appintents ##########"
+          find ~/Library/Developer/Xcode/DerivedData -path "*Metadata.appintents*" 2>/dev/null | head -10 || true
+          for f in $(find ~/Library/Developer/Xcode/DerivedData -name extract.actionsdata 2>/dev/null | head -1); do
+            echo "--- $f ($(wc -c < "$f") B) ---"; head -c 2500 "$f"; echo
+          done
+          echo "########## F. 协议清单 JSON 内容(直接从 DerivedData 找) ##########"
+          for f in $(find ~/Library/Developer/Xcode/DerivedData -name "*_const_extract_protocols.json" 2>/dev/null | head -3); do
+            echo "=== $f ($(wc -c < "$f") B) ==="; cat "$f"; echo
+          done
+          echo "########## G. swiftconstvalues ##########"
+          find ~/Library/Developer/Xcode/DerivedData -name "*.swiftconstvalues" 2>/dev/null | head -3
+          for f in $(find ~/Library/Developer/Xcode/DerivedData -name "*.swiftconstvalues" 2>/dev/null | head -1); do echo "=== $f ==="; cat "$f"; echo; done
+          echo "########## H. actionsdata ##########"
+          for f in $(find ~/Library/Developer/Xcode/DerivedData -name "extract.actionsdata" 2>/dev/null | head -1); do echo "=== $f ==="; cat "$f"; echo; done
+          echo "########## G. 处理器调用 ##########"
+          grep -o "appintentsmetadataprocessor.\{0,900\}" build.log | head -1 || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-log
+          path: intentprobe/build.log

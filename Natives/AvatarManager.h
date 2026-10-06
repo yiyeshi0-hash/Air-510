@@ -1,0 +1,61 @@
+#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+/// 账户头像自定义导入管理器（单例）。
+/// 按 accountName 将自定义头像 PNG 存储到 Documents/avatars/<accountName>.png。
+/// 读取时本地优先，回退到在线 URL。
+@interface AvatarManager : NSObject
+
++ (instancetype)sharedManager;
+
+/// 保存指定账户的自定义头像图片。
+/// accountName 为 nil 或空串时调用无效。
+- (void)saveAvatarForAccount:(NSString *)accountName
+                     image:(UIImage *)image
+          withCompletion:(void (^)(BOOL success, NSError * _Nullable error))completion;
+
+/// 读取指定账户的自定义头像图片，不存在返回 nil。
+- (nullable UIImage *)avatarForAccount:(NSString *)accountName;
+
+/// 是否已存在指定账户的自定义头像。
+- (BOOL)hasCustomAvatarForAccount:(NSString *)accountName;
+
+/// 删除指定账户的自定义头像（恢复使用在线 URL 头像）。
+- (void)removeAvatarForAccount:(NSString *)accountName;
+
+// ★ [PRISMA-GAP] 以下四项灵感来源：Gsjsjzhznsz/Prisma-Minecraft-iOS-Launcher
+//   Natives/AvatarManager.{h,m}（Task169/180/185），本仓按同机制移植。
+
+/// Task180：accountId 优先 + username 回退查询（防御"右侧栏头像未显示"）——
+/// 历史版本头像曾按 username 存盘；账号 ID 漂移后按旧 ID 查不到。先按
+/// accountId 查，miss 且 username 非空时按 username 兜底再查一次。两处均
+/// miss 返回 nil。
+- (nullable UIImage *)avatarForAccount:(NSString *)accountName
+                       usernameFallback:(nullable NSString *)username;
+
+/// Task180：账号 ID 漂移时的头像迁移——仅当旧 ID 头像存在且新 ID 头像
+/// 不存在时搬移（幂等防覆盖）；任一侧条件不满足为无害空操作。
+- (void)ame180_migrateAvatarFromAccount:(NSString *)oldAccount
+                              toAccount:(NSString *)newAccount;
+
+/// Task169：网络头像获取（10s 超时 + Caches 磁盘缓存 + 失败日志）。
+/// completion 恰好回调一次（主线程），参数 = 最佳可用图片
+/// （磁盘缓存 > 网络 > nil）；磁盘命中后仍在后台刷新缓存。
+/// 替代各处裸 NSData dataWithContentsOfURL（默认 60s 挂起、失败静默、
+/// 无持久化——装机实测主页头像"要点一下才能显示"的根因）。
+- (void)fetchAvatarFromURL:(NSString *)urlString
+                completion:(void (^)(UIImage * _Nullable image))completion;
+
+/// Task185：带账号上下文的头像获取链（"正版账号没有皮肤"）。
+/// 三层回退：①authData 的 profilePicURL（跳过 "(null)" 脏数据形态）；
+/// ②crafatar 按 profileId（UUID）渲染正版皮肤头；③minotar 按 username。
+/// 旧代码只拉单一镜像，域名 DNS 失效时所有正版账号头像全灭；回退链保证
+/// 只要任一公开头像源可达就能出图。completion 恰好回调一次（主线程）。
+- (void)ame185_fetchAvatarForAuthData:(NSDictionary *)authData
+                           completion:(void (^)(UIImage * _Nullable image))completion;
+
+@end
+
+NS_ASSUME_NONNULL_END
