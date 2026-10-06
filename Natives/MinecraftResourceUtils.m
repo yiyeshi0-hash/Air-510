@@ -317,6 +317,65 @@
     return @[];
 }
 
+#pragma mark - ★ [MISS] 启动所需文件清单（下载器 ⇄ 启动准入门禁 共用唯一真源）
+
++ (NSDictionary *)resolvedLibraryArtifactForLaunch:(NSDictionary *)library {
+    if (![library isKindOfClass:[NSDictionary class]]) return nil;
+
+    // ① skip：tweakVersionJson 已按「natives / downloads.classifiers / org.lwjgl / OS rules 不适用」置位。
+    //   iOS 视作 osx，rules 只 allow windows/linux（或 disallow osx）的库在这里被排除 ⇒ 不再去下、
+    //   也不会被启动准入门禁算作「必需件」。这就是「正常安装却报缺件」那类假阳性的堵点。
+    if ([library[@"skip"] boolValue]) return nil;
+
+    NSString *name = [library[@"name"] isKindOfClass:[NSString class]] ? library[@"name"] : nil;
+    NSDictionary *artifact = library[@"downloads"][@"artifact"];
+
+    if (artifact == nil && [name containsString:@":"]) {
+        // ★ [PREDL] 与下载器同一分支：Fabric/Quilt 的 meta profile 库条目【没有 downloads 块】，
+        //   只有顶层 sha1/size（如 org.ow2.asm:asm:9.7.1、net.fabricmc:sponge-mixin）。
+        //   旧代码只有下载器会生成伪 artifact，门禁则跳过 ⇒ 两边清单不一致。现在两边都走本函数。
+        NSLog(@"[LIB-LIST] Unknown artifact object for %@, attempting to generate one", name);
+        NSArray *libParts = [name componentsSeparatedByString:@":"];
+        // ★ [DEMINE] 非标准 Maven 名（<3 段）无法生成 path：下载器同样下不了 ⇒ 返回 nil
+        if (libParts.count < 3) {
+            NSLog(@"[LIB-LIST] skip non-3-part lib name '%@' (下载器同样无法生成 artifact，门禁不计为缺件)", name);
+            return nil;
+        }
+        NSString *prefix = library[@"url"] == nil
+            ? @"https://libraries.minecraft.net/"
+            : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
+        NSMutableDictionary *gen = [NSMutableDictionary dictionary];
+        gen[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar",
+                        [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
+        gen[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, gen[@"path"]];
+        // 顶层 sha1/size（缺则保持无 —— intermediary / fabric-loader 在 meta 里确实不带 sha1，
+        // 只能走「仅存在性」兜底）；★ 兼容 checksums 是数组（Forge）或字符串两种写法。
+        id csum = library[@"checksums"];
+        id sha1 = nil;
+        if ([csum isKindOfClass:[NSArray class]]) {
+            sha1 = [(NSArray *)csum firstObject];
+        } else if ([csum isKindOfClass:[NSString class]]) {
+            sha1 = csum;
+        }
+        if (sha1 == nil) sha1 = library[@"sha1"];
+        if (sha1 != nil) gen[@"sha1"] = sha1;
+        if (library[@"size"] != nil) gen[@"size"] = library[@"size"];
+        artifact = gen;
+    }
+
+    if (![artifact isKindOfClass:[NSDictionary class]]) return nil;
+    id path = artifact[@"path"];
+    if (![path isKindOfClass:[NSString class]] || [(NSString *)path length] == 0) return nil;
+    return artifact;
+}
+
++ (BOOL)assetObjectExcludedOnThisPlatform:(NSString *)name {
+    if (![name isKindOfClass:[NSString class]]) return NO;
+    // ★ 1.19+ 起不下载 macOS 窗口图标 minecraft.icns（下载器会把它删掉）。
+    //   iOS 上它毫无用处 ⇒ 永不下载 ⇒ 门禁不得把它算作缺件。
+    return [name isEqualToString:@"minecraft.icns"] || [name hasSuffix:@"/minecraft.icns"];
+}
+
 + (void)tweakVersionJson:(NSMutableDictionary *)json {
     // Exclude some libraries
     for (NSMutableDictionary *library in json[@"libraries"]) {

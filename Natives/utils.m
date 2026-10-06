@@ -33,8 +33,8 @@ extern char **environ;   // ★ [JIT-ENV] posix_spawnp 的 envp（部分 SDK 下
 
 #include "utils.h"
 
-// ★ [VER-ISOLATE-PCL] 版本隔离解析需要读全局偏好键 general.version_isolation，
-// 故引入偏好访问层（LauncherPreferences.h 不反向包含 utils.h，无循环依赖风险）。
+// ★ [NO-VI] gameDir 解析（版本隔离已删除；此处仅需偏好访问层）。
+// 引入偏好访问层（LauncherPreferences.h 不反向包含 utils.h，无循环依赖风险）。
 #import "LauncherPreferences.h"
 
 CFTypeRef SecTaskCopyValueForEntitlement(void* task, NSString* entitlement, CFErrorRef  _Nullable *error);
@@ -1439,8 +1439,73 @@ static BOOL   gAmeJITVerified = NO;
 static NSTimeInterval gAmeJITLastVerifyAttempt = 0;
 static int    gAmeJITVerifyAttempts = 0;
 
+// ★ [JIT-HANG] ============================================================
+// brk #0x69 是「取 JIT」里**唯一会被外部调试器同步应答**的操作。危险点：
+//   · 调试器在岗**但不在服务**这一发（universal/legacy 脚本只服务一次断点、
+//     脚本循环已退出、或工具 attach 后立即脱离但异常端口仍被持有）时，内核把
+//     EXC_BREAKPOINT 投给调试器例外端口，无人应答 ⇒ brk **永不返回**；
+//   · 这种情况下 SIGTRAP 安全网【不会】触发 —— Mach 例外优先于信号转换
+//     （见本文件 JIT26TrapCatch 上方注释），故 JIT26CreateRegionLegacySafe
+//     的 sigsetjmp 兜底在这条路径上形同虚设。
+//   · 原实现把它放在 **主线程** 直接同步调用（invokeAfterJITEnabled → 本函数），
+//     于是「启动/取 JIT」= 主线程永久挂起 = UI 卡死，且【全链路无任何超时】。
+// 修法（保持语义不变、只加边界）：
+//   ① 永远在**专用后台线程**上发 brk（brk 不需要主线程应答）；
+//   ② 调用方用**有界 deadline** 等待，超时即判「不可用」并放弃那个卡住的线程
+//      —— UI 最多阻塞 deadline，绝不再无限等；
+//   ③ 全局 in-flight 守卫：同一时刻只允许一发 brk 在途，上一发未返回时后续
+//      调用立刻返回 NO（绝不叠加第二发卡死的 brk）。
+// ============================================================================
+static os_unfair_lock gAmeJITBrkLock = OS_UNFAIR_LOCK_INIT;
+static volatile int  gAmeJITBrkInFlight = 0;   // 1 = 已有一发 brk 在途/卡住
+
+// ★ [JIT-HANG] 在后台线程发一发 brk #0x69，最多等 deadlineSec；返回区域指针或 NULL。
+static void *ameJITBrk69Bounded(NSTimeInterval deadlineSec, const char *why) {
+    const char *caller = [NSThread isMainThread] ? "main" : "bg";
+    os_unfair_lock_lock(&gAmeJITBrkLock);
+    if (gAmeJITBrkInFlight) {
+        os_unfair_lock_unlock(&gAmeJITBrkLock);
+        NSLog(@"[JIT-HANG] %s: a previous brk #0x69 is still in flight/hung -- refusing to stack "
+              @"another (fast-fail, caller=%s)", why, caller);
+        return NULL;
+    }
+    gAmeJITBrkInFlight = 1;
+    os_unfair_lock_unlock(&gAmeJITBrkLock);
+
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block void *res = NULL;
+    NSTimeInterval t0 = [NSDate date].timeIntervalSince1970;
+    NSThread *worker = [[NSThread alloc] initWithBlock:^{
+        res = JIT26CreateRegionLegacySafe((size_t)getpagesize());
+        os_unfair_lock_lock(&gAmeJITBrkLock);
+        gAmeJITBrkInFlight = 0;   // 已返回 ⇒ 允许下一发
+        os_unfair_lock_unlock(&gAmeJITBrkLock);
+        dispatch_semaphore_signal(sem);
+    }];
+    worker.name = @"ame-jit-brk69";
+    worker.threadPriority = 0.9;
+    [worker start];
+
+    long wr = dispatch_semaphore_wait(sem,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(deadlineSec * NSEC_PER_SEC)));
+    NSTimeInterval elapsed = [NSDate date].timeIntervalSince1970 - t0;
+    if (wr != 0) {
+        // ★ [JIT-HANG] 超时 = 调试器端口在岗却不服务 ⇒ 放弃这一发（线程会一直卡在
+        //   brk 里，但不再拖住 UI / 调用方）。in-flight 守卫保持置位 ⇒ 后续快速失败。
+        NSLog(@"[JIT-HANG] %s: brk #0x69 did NOT return within %.2fs (caller=%s) -- debugger exception "
+              @"port attached but not servicing; treating JIT as NOT usable, UI continues (stuck thread abandoned)",
+              why, deadlineSec, caller);
+        return NULL;
+    }
+    NSLog(@"[JIT-HANG] %s: brk #0x69 returned in %.3fs (caller=%s) -> %p",
+          why, elapsed, caller, res);
+    return res;
+}
+
 // 主动申请并（尽力）写入一块 JIT 区，作为「真能力」判据。失败限流 2s
 // （等待循环 200ms 一轮，若不限流会每轮发一次 brk）。
+// ★ [JIT-HANG] brk 改由 ameJITBrk69Bounded 在后台线程 + 有界 deadline 内发出：
+//   主线程给 1.5s（UI 只允许极短阻塞），非主线程给 3.0s（等待循环里的探测）。
 BOOL AMEJITVerifyWritableJITRegion(void) {
     if (gAmeJITVerified) {
         return YES;
@@ -1453,7 +1518,8 @@ BOOL AMEJITVerifyWritableJITRegion(void) {
     gAmeJITVerifyAttempts++;
 
     size_t len = (size_t)getpagesize();
-    void *r = JIT26CreateRegionLegacySafe(len);   // brk #0x69；无人服务时返回 NULL 不致死
+    NSTimeInterval deadline = [NSThread isMainThread] ? 1.5 : 3.0;   // ★ [JIT-HANG]
+    void *r = ameJITBrk69Bounded(deadline, "AMEJITVerifyWritableJITRegion");   // brk #0x69；无人服务/超时返回 NULL 不致死
     if (r == NULL) {
         NSLog(@"[JIT-FLOW] false-positive guard triggered (#%d): brk #0x69 NOT serviced -- NOT counting JIT as "
               @"enabled (isJITEnabled=%d keepAttached=%d traced=%d exn=%d)",
@@ -1521,7 +1587,20 @@ static void ameJITInvalidateStatusProbe(void) {
     os_unfair_lock_unlock(&gAmeJITStatusProbeLock);
 }
 
-BOOL AMEJITBothMappingKindsExecutable(void) {
+// ★ [JIT-HANG] 探针缓存的只读 peek：freshOnly=YES 时 >2s 的旧值视为未知。
+static int ameJITStatusProbePeek(BOOL freshOnly) {
+    os_unfair_lock_lock(&gAmeJITStatusProbeLock);
+    int v = gAmeJITStatusProbe;
+    if (freshOnly && v != 0) {
+        NSTimeInterval now = [NSDate date].timeIntervalSince1970;
+        if ((now - gAmeJITStatusProbeTs) > 2.0) v = 0;   // 过期 ⇒ 当未知
+    }
+    os_unfair_lock_unlock(&gAmeJITStatusProbeLock);
+    return v;
+}
+
+// 在【调用线程】上真跑两型执行式探针（会真的执行自产代码）。调用方保证不在主线程。
+static int ameJITStatusProbeRunInline(void) {
     os_unfair_lock_lock(&gAmeJITStatusProbeLock);
     NSTimeInterval now = [NSDate date].timeIntervalSince1970;
     if (gAmeJITStatusProbe == 0 || (now - gAmeJITStatusProbeTs) > 2.0) {
@@ -1534,9 +1613,45 @@ BOOL AMEJITBothMappingKindsExecutable(void) {
               @"(1=exec-OK 2=mprotect-denied 3=exec-FAULTED 4=inconclusive)",
               (long)rAnon, (long)rFile, ok ? @"EXECUTABLE" : @"NOT-executable");
     }
-    BOOL ok = (gAmeJITStatusProbe > 0);
+    int v = gAmeJITStatusProbe;
     os_unfair_lock_unlock(&gAmeJITStatusProbeLock);
-    return ok;
+    return v;
+}
+
+// ★ [JIT-HANG] 后台预热缓存（供主线程"冷缓存不在主线程执行"的快速失败路径用）。
+static os_unfair_lock gAmeJITStatusKickLock = OS_UNFAIR_LOCK_INIT;
+static int gAmeJITStatusKickInflight = 0;
+static void ameJITStatusProbeKick(void) {
+    os_unfair_lock_lock(&gAmeJITStatusKickLock);
+    if (gAmeJITStatusKickInflight) { os_unfair_lock_unlock(&gAmeJITStatusKickLock); return; }
+    gAmeJITStatusKickInflight = 1;
+    os_unfair_lock_unlock(&gAmeJITStatusKickLock);
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        (void)ameJITStatusProbeRunInline();
+        os_unfair_lock_lock(&gAmeJITStatusKickLock);
+        gAmeJITStatusKickInflight = 0;
+        os_unfair_lock_unlock(&gAmeJITStatusKickLock);
+    });
+}
+
+BOOL AMEJITBothMappingKindsExecutable(void) {
+    // ★ [JIT-HANG] 本判据要**真的执行自产代码**。若在【主线程】执行，而调试器持有异常
+    //   端口，取指 fault 会先投给调试器（Mach 例外优先于信号）⇒ 本地 SIGBUS/SIGSEGV
+    //   安全网不触发 ⇒ 主线程被无限挂起（= UI 卡死）。故：
+    //     · 缓存 fresh ⇒ 直接用，不重探；
+    //     · 主线程 + 冷缓存 ⇒ 绝不在此执行探针：当场返回上一次已知值（无则 NO）并
+    //       后台预热（下一次状态刷新/等待循环即反映真值）—— 快速失败、UI 不阻塞；
+    //     · 非主线程 ⇒ 内联真探（等待循环的 deadline 由调用方兜底）。
+    int fresh = ameJITStatusProbePeek(YES);
+    if (fresh != 0) return (fresh > 0);
+    if ([NSThread isMainThread]) {
+        int any = ameJITStatusProbePeek(NO);
+        NSLog(@"[JIT-HANG] both-kinds exec-probe NOT run on MAIN thread (cold cache) -- returning %s fast, warming in background",
+              any > 0 ? "last-known YES" : (any < 0 ? "last-known NO" : "NO"));
+        ameJITStatusProbeKick();
+        return (any > 0);
+    }
+    return (ameJITStatusProbeRunInline() > 0);
 }
 
 // 可用性三态缓存（1s），避免状态刷新/等待循环里反复重探。
@@ -1683,14 +1798,59 @@ static BOOL ameJITTrollStoreSelfEnable(NSString **reasonOut) {
         if (reasonOut) *reasonOut = [NSString stringWithFormat:@"posix_spawn failed ret=%d errno=%d", ret, errno];
         return NO;
     }
-    waitpid(pid, NULL, WUNTRACED);
+    // ★ [JIT-HANG] 原为裸 waitpid(pid, NULL, WUNTRACED)（**无超时**）：子进程若不进入
+    //   main() 的 argc==2 分支（例如已带 CS_DEBUGGED / 权限，直接走正常启动）就不会
+    //   因 PT_TRACE_ME 停下，父线程会一直阻塞到子进程退出（可能就是永不退出）。
+    //   改为有界轮询 WNOHANG：预算内没停下就判失败、杀子进程并回收，绝不死等。
+    int ameTS_status = 0;
+    const NSTimeInterval ameTS_deadline = 5.0;
+    NSDate *ameTS_start = [NSDate date];
+    BOOL ameTS_stopped = NO;
+    for (;;) {
+        pid_t w = waitpid(pid, &ameTS_status, WUNTRACED | WNOHANG);
+        if (w == pid) { ameTS_stopped = YES; break; }
+        if (w == -1) { break; }   // 无此子进程 / 出错：跳出，下面按失败处理
+        if (-[ameTS_start timeIntervalSinceNow] >= ameTS_deadline) { break; }   // ★ 超时
+        usleep(50 * 1000);
+    }
+    if (!ameTS_stopped) {
+        NSLog(@"[JIT-HANG] trollstore self-enable: child pid=%d did NOT stop within %.0fs "
+              @"(no PT_TRACE_ME stop; WNOHANG poll) -- aborting self-enable, killing+reaping child",
+              pid, ameTS_deadline);
+        kill(pid, SIGKILL);
+        // 有界回收，避免留下僵尸。
+        NSDate *ameTS_reapStart = [NSDate date];
+        while (-[ameTS_reapStart timeIntervalSinceNow] < 3.0) {
+            if (waitpid(pid, NULL, WNOHANG) == pid) break;
+            usleep(50 * 1000);
+        }
+        if (reasonOut) *reasonOut = @"trollstore self-spawn child did not stop (bounded wait timeout)";
+        return NO;
+    }
     ptrace(PT_DETACH, pid, NULL, 0);
     kill(pid, SIGTERM);
-    wait(NULL);
+    // ★ [JIT-HANG] 有界回收（原来是裸 wait(NULL)）。
+    NSDate *ameTS_reapStart = [NSDate date];
+    while (-[ameTS_reapStart timeIntervalSinceNow] < 3.0) {
+        if (waitpid(pid, NULL, WNOHANG) == pid) break;
+        usleep(50 * 1000);
+    }
     return isJITEnabled(true);   // CS_DEBUGGED（与 main.m 同判据）
 }
 
 AMEJITEnsureResult AMEJITEnsureJITUsable(NSString **reasonOut) {
+    // ★ [JIT-HANG] 本函数会 posix_spawn 子进程 + 有界等待 + 执行式探针 —— 绝不能在主线程
+    //   跑（那正是「版本设置/启动页取 JIT 卡死」的形态）。若被误在主线程调用：立刻返回
+    //   NeedsExternal 并把真正的工作丢到后台，UI 既不被阻塞也不会因此死等。
+    if ([NSThread isMainThread]) {
+        NSLog(@"[JIT-HANG] AMEJITEnsureJITUsable called on MAIN thread -- offloading to background (UI must never block)");
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+            (void)AMEJITEnsureJITUsable(NULL);
+        });
+        if (reasonOut) *reasonOut = @"offloaded to background (was called on main thread)";
+        return AMEJITEnsureResultNeedsExternal;
+    }
+    NSTimeInterval ameEns_t0 = [NSDate date].timeIntervalSince1970;   // ★ [JIT-HANG] 总耗时
     AMEJITEnvKind env = AMEJITEnvironmentKind();
     NSString *envName = AMEJITEnvironmentName(env);
 
@@ -1755,6 +1915,17 @@ AMEJITEnsureResult AMEJITEnsureJITUsable(NSString **reasonOut) {
     AMEJITAppendCrashNote([NSString stringWithFormat:
         @"[JIT-ENV] env=%@ jit_at_launch=NO ⇒ request result=%@ effective=%@ reason=%@",
         envName, eff ? @"OK" : @"FAIL", eff ? @"available" : @"unavailable", reqWhy ?: @"-"]);
+
+    // ★ [JIT-HANG] 总耗时打点：>8s 视为异常（自开/brk 环节有卡顿），写进日志便于
+    //   真机一眼定位是哪一步慢。
+    NSTimeInterval ameEns_el = [NSDate date].timeIntervalSince1970 - ameEns_t0;
+    if (ameEns_el > 8.0) {
+        NSLog(@"[JIT-HANG] AMEJITEnsureJITUsable took %.0fms (>8s budget) -- inspect self-spawn/brk path for a stuck wait",
+              ameEns_el * 1000.0);
+    } else {
+        NSLog(@"[JIT-HANG] AMEJITEnsureJITUsable done in %.0fms (effective=%d result=%ld)",
+              ameEns_el * 1000.0, (int)eff, (long)(eff ? AMEJITEnsureResultNowUsable : res));
+    }
 
     if (eff) {
         if (reasonOut) *reasonOut = @"now usable after request";
@@ -2590,94 +2761,21 @@ BOOL ameVIHardLinkLog(NSString *srcPath, NSString *dstPath) {
     return NO;
 }
 
-#pragma mark - ★ [VER-ISOLATE-PCL] 版本隔离（对齐 PCL-CE「实例隔离」）
+#pragma mark - ★ [VER-ISOLATE-PCL → NO-VI] gameDir 解析（版本隔离已移除，恒共享）
 
-// 版本隔离全局默认键（对应 PCL 的 LaunchArgumentIndieV2「默认实例隔离」）。
-static NSString *const kAmePCLVersionIsolationPref = @"general.version_isolation";
-// 一次性迁移哨兵（对应 PCL 旧值 VersionArgumentIndie → V2 的一次性迁移）。
-static NSString *const kAmePCLVersionIsolationMigrated = @"internal.version_isolation_migrated";
-
-// 版本 id 是否「具体可隔离」：
-//   排除 latest-release / latest-snapshot 之类的别名与 path 片段，并要求实例的
-//   versions/<id>/ 下确有版本定义（目录或 <id>.json）。核验不过一律回退共享（"."），
-//   保证「隔离改动永不阻断启动」——最坏情况只是没有隔离，而不是找不到游戏目录。
-static BOOL amePCLVersionIdIsConcrete(NSString *vid) {
-    if (vid.length == 0) return NO;
-    if ([vid isEqualToString:@"(default)"]) return NO;
-    if ([vid hasPrefix:@"latest-"]) return NO;           // latest-release / latest-snapshot
-    if ([vid containsString:@"/"] || [vid containsString:@"\\"]) return NO;
-    NSString *root = ameVIInstanceRoot();
-    if (root.length == 0) return YES;                    // 无法核验时按可隔离处理
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSString *dir = [[root stringByAppendingPathComponent:@"versions"]
-                     stringByAppendingPathComponent:vid];
-    BOOL isDir = NO;
-    if ([fm fileExistsAtPath:dir isDirectory:&isDir] && isDir) return YES;
-    NSString *json = [dir stringByAppendingPathComponent:
-                      [vid stringByAppendingPathExtension:@"json"]];
-    if ([fm fileExistsAtPath:json]) return YES;
-    return NO;
-}
-
-// 解析 profile 的版本 id：优先用调用方给的"实际启动版本"（launchTarget[@“id”]），
-// 其次 profile.lastVersionId。都不可隔离则返回 nil。
-static NSString *amePCLProfileVersionId(NSDictionary *prof, NSString *concreteVersionId) {
-    if (amePCLVersionIdIsConcrete(concreteVersionId)) return concreteVersionId;
-    id vid = prof[@"lastVersionId"];
-    if ([vid isKindOfClass:NSString.class] && amePCLVersionIdIsConcrete((NSString *)vid)) {
-        return (NSString *)vid;
-    }
-    return nil;
-}
-
-// 自动判定（对应 PCL ShouldBeIndie 第 2 步）：<实例根>/versions/<id>/ 下已有
-// mods（含非隐藏文件）或 saves（含非隐藏目录）⇒ 视为已隔离。
-static BOOL amePCLVersionFolderHasUserData(NSString *versionId) {
-    if (versionId.length == 0) return NO;
-    // ★ [VI-POLISH] 与 ameVISniffVersionFolder 同源（同一条规则，UI 说明与判定不会漂移）
-    NSDictionary *s = ameVISniffVersionFolder(versionId);
-    return [s[@"hasMods"] boolValue] || [s[@"hasSaves"] boolValue];
-}
-
-BOOL amePCLVersionIsolationForProfile(NSDictionary *prof, NSString *concreteVersionId) {
-    if (![prof isKindOfClass:NSDictionary.class]) prof = nil;
-
-    // 1) profile 显式值（PCL: VersionArgumentIndieV2）
-    id explicit = prof[@"versionIsolation"];
-    if ([explicit isKindOfClass:NSNumber.class]) return [(NSNumber *)explicit boolValue];
-    if ([explicit isKindOfClass:NSString.class] && [(NSString *)explicit length] > 0) {
-        return [(NSString *)explicit boolValue];
-    }
-
-    // 2) 自动判定（PCL: ShouldBeIndie 的 mods/saves 启发式）
-    NSString *vid = amePCLProfileVersionId(prof, concreteVersionId);
-    if (vid.length > 0 && amePCLVersionFolderHasUserData(vid)) {
-        NSLog(@"★ [VER-ISOLATE-PCL] 开启版本隔离（自动）：versions/%@ 下已有 mods/saves", vid);
-        return YES;
-    }
-
-    // 3) 全局默认（PCL: LaunchArgumentIndieV2 默认实例隔离策略）
-    return getPrefBool(kAmePCLVersionIsolationPref);
-}
-
+// ★ [NO-VI] 版本隔离功能已整体移除。本段仅保留 gameDir 解析 API 供各调用点继续使用，
+//   行为恒等于「隔离关闭」：显式自定义 gameDir 优先，否则返回共享根 "."。
+//   历史数据里残留的 versionIsolation 键一律被忽略，绝不再改变游戏目录。
 NSString *amePCLVersionGameDirSubpath(NSDictionary *prof, NSString *concreteVersionId) {
     if (![prof isKindOfClass:NSDictionary.class]) prof = nil;
 
-    // 显式 gameDir（非 "."）永远优先：保持既有"自定义游戏目录"语义不受隔离开关影响。
+    // 显式 gameDir（非 "."）永远优先：保持既有"自定义游戏目录"语义。
     id gd = prof[@"gameDir"];
     if ([gd isKindOfClass:NSString.class] && [(NSString *)gd length] > 0 &&
         ![(NSString *)gd isEqualToString:@"."]) {
         return (NSString *)gd;
     }
-
-    if (!amePCLVersionIsolationForProfile(prof, concreteVersionId)) return @".";
-
-    NSString *vid = amePCLProfileVersionId(prof, concreteVersionId);
-    if (vid.length == 0) {
-        NSLog(@"★ [VER-ISOLATE-PCL] 版本 id 不可确定，本版本回退共享目录（不隔离）");
-        return @".";
-    }
-    return [NSString stringWithFormat:@"versions/%@", vid];
+    return @".";   // 恒共享：版本隔离已删除
 }
 
 NSString *amePCLVersionGameDirAbsolute(NSDictionary *prof, NSString *concreteVersionId) {
@@ -2690,167 +2788,9 @@ NSString *amePCLVersionGameDirAbsolute(NSDictionary *prof, NSString *concreteVer
     return [[base stringByAppendingPathComponent:clean] stringByStandardizingPath];
 }
 
-void amePCLMigrateVersionIsolationOnce(void) {
-    if ([getPrefObject(kAmePCLVersionIsolationMigrated) boolValue]) return;  // 幂等：只跑一次
 
-    // 迁移在 main.m 的 init_setupMultiDir() 之后调用，POJAV_GAME_DIR 已就绪；
-    // 这里仍走 ameVIInstanceRoot()（直读全局 plist），不依赖该环境变量。
-    NSString *root = ameVIInstanceRoot();
-    if (root.length == 0) return;
-    NSString *profPath = [root stringByAppendingPathComponent:@"launcher_profiles.json"];
-    NSMutableDictionary *pd = parseJSONFromFile(profPath);
-    NSMutableDictionary *profiles = pd[@"profiles"];
-
-    if ([profiles isKindOfClass:NSMutableDictionary.class]) {
-        BOOL changed = NO;
-        for (NSString *name in profiles.allKeys) {
-            NSMutableDictionary *prof = profiles[name];
-            if (![prof isKindOfClass:NSMutableDictionary.class]) continue;
-            if (prof[@"versionIsolation"]) continue;   // 已有显式值，绝不覆盖用户选择
-
-            BOOL alreadyIsolated = NO;
-            id gd = prof[@"gameDir"];
-            if ([gd isKindOfClass:NSString.class] && [(NSString *)gd hasPrefix:@"versions/"]) {
-                alreadyIsolated = YES;                 // 升级前手工把 gameDir 指到 versions/*
-            }
-            if (!alreadyIsolated) {
-                id vid = prof[@"lastVersionId"];
-                if ([vid isKindOfClass:NSString.class] && amePCLVersionFolderHasUserData((NSString *)vid)) {
-                    alreadyIsolated = YES;             // 该版本目录下已有 mods/saves
-                }
-            }
-            if (alreadyIsolated) {
-                prof[@"versionIsolation"] = @"1";      // 显式落值 ⇒ 设置页可见、可回退
-                changed = YES;
-                NSLog(@"★ [VER-ISOLATE-PCL] 迁移：profile「%@」已存在版本隔离数据 ⇒ 显式置为开启", name);
-            }
-        }
-        if (changed) saveJSONToFile(pd, profPath);
-    }
-
-    setPrefObject(kAmePCLVersionIsolationMigrated, @YES);
-    NSLog(@"★ [VER-ISOLATE-PCL] 版本隔离一次性迁移完成（哨兵 %@）", kAmePCLVersionIsolationMigrated);
-}
-
-// ★ [VER-ISOLATE-MIGRATE] ====================================================
-// 共享游戏根绝对路径解析（迁移的"源根"）。只解析路径，不做任何搬动。
-// POJAV_GAME_DIR 由 init_setupMultiDir() 设置（= POJAV_HOME/instances/<实例>），
-// 与 ameVIInstanceRoot() 同源；环境变量不可得时回退后者，绝不返回空。
-NSString *amePCLSharedGameDirAbsolute(void) {
-    const char *env = getenv("POJAV_GAME_DIR");
-    if (env && *env) return [NSString stringWithUTF8String:env];
-    NSString *root = ameVIInstanceRoot();
-    if (root.length > 0) return root;
-    const char *home = getenv("POJAV_HOME");
-    return home ? [NSString stringWithUTF8String:home] : NSHomeDirectory();
-}
-
-// ★ [VER-ISOLATE-MIGRATE] 关隔离时该 profile 实际使用的 gameDir（迁移的"源根"）。
-// 唯一真相源 = 同一 resolver：显式关掉隔离后交给 amePCLVersionGameDirAbsolute 解析，
-// 自己绝不另拼一套路径（约束：目标/源都必须来自隔离 resolver）。
-NSString *amePCLSharedGameDirForProfile(NSDictionary *prof, NSString *concreteVersionId) {
-    if (![prof isKindOfClass:NSDictionary.class]) return amePCLSharedGameDirAbsolute();
-    NSMutableDictionary *off = [prof mutableCopy];
-    off[@"versionIsolation"] = @"0";       // 显式关 ⇒ resolver 第 1 步直接返回共享语义
-    return amePCLVersionGameDirAbsolute(off, concreteVersionId);
-}
-
-// ★ [VI-POLISH] ==============================================================
-// 建议 A（三态可见化）+ B（向导门槛）的共用底座实现。
-// 只读磁盘 / 只读写设置；绝不移动、复制、删除任何文件。
-// ★ [VI-FLOW] 用户修正：B 的门槛＝「用户主动选『以后不再提示』才落哨兵」，未落则每次进启动器都再弹
-// （哨兵读/写点各唯一，见文件末尾；弹出时不写哨兵）。
-
-#pragma mark - ★ [VI-POLISH] A. 隔离显式三态
-
-AmeVIExplicitState ameVIExplicitStateForProfile(NSDictionary *prof) {
-    if (![prof isKindOfClass:NSDictionary.class]) return AmeVIExplicitStateAuto;
-    id raw = prof[@"versionIsolation"];
-    if ([raw isKindOfClass:NSNumber.class]) {
-        return [(NSNumber *)raw boolValue] ? AmeVIExplicitStateIsolated : AmeVIExplicitStateShared;
-    }
-    if ([raw isKindOfClass:NSString.class] && [(NSString *)raw length] > 0) {
-        return [(NSString *)raw boolValue] ? AmeVIExplicitStateIsolated : AmeVIExplicitStateShared;
-    }
-    return AmeVIExplicitStateAuto;   // 未落键 ⇒ 自动
-}
-
-void ameVISetExplicitStateForProfile(NSMutableDictionary *prof, AmeVIExplicitState state) {
-    if (![prof isKindOfClass:NSMutableDictionary.class]) return;
-    switch (state) {
-        case AmeVIExplicitStateIsolated:
-            prof[@"versionIsolation"] = @"1";    // 显式开：resolver 第 1 步立即返回 YES
-            break;
-        case AmeVIExplicitStateShared:
-            prof[@"versionIsolation"] = @"0";    // 显式关：resolver 第 1 步立即返回 NO
-            break;
-        case AmeVIExplicitStateAuto:
-        default:
-            [prof removeObjectForKey:@"versionIsolation"];   // 自动：回到 嗅探 → 全局默认
-            // 说明：这里刻意【不】写任何默认值 —— 默认仍是「关」，与既有语义完全一致。
-            break;
-    }
-}
-
-#pragma mark - ★ [VI-POLISH] A. 版本目录形状嗅探（只读，供 UI 说明判定依据）
-
-NSDictionary *ameVISniffVersionFolder(NSString *versionId) {
-    NSMutableDictionary *r = [@{ @"hasMods":  @NO,
-                                 @"hasSaves": @NO,
-                                 @"hasAny":   @NO,
-                                 @"exists":   @NO,
-                                 @"path":     @"" } mutableCopy];
-    if (versionId.length == 0) return r;
-
-    NSString *root = ameVIInstanceRoot();
-    if (root.length == 0) return r;
-    NSString *vdir = [[root stringByAppendingPathComponent:@"versions"]
-                      stringByAppendingPathComponent:versionId];
-    r[@"path"] = vdir;
-
-    NSFileManager *fm = [NSFileManager defaultManager];
-    BOOL isDir = NO;
-    if ([fm fileExistsAtPath:vdir isDirectory:&isDir] && isDir) r[@"exists"] = @YES;
-
-    // 与 resolver 的自动判定逐字同源：非隐藏条目即算「有内容」（mods 是文件、saves 是目录，
-    // 这里都按「目录下有没有非隐藏条目」判，与 amePCLVersionFolderHasUserData 一致）。
-    BOOL hasMods = NO, hasSaves = NO;
-    for (NSString *f in ([fm contentsOfDirectoryAtPath:[vdir stringByAppendingPathComponent:@"mods"] error:nil] ?: @[])) {
-        if (![f hasPrefix:@"."]) { hasMods = YES; break; }
-    }
-    for (NSString *f in ([fm contentsOfDirectoryAtPath:[vdir stringByAppendingPathComponent:@"saves"] error:nil] ?: @[])) {
-        if (![f hasPrefix:@"."]) { hasSaves = YES; break; }
-    }
-    r[@"hasMods"]  = @(hasMods);
-    r[@"hasSaves"] = @(hasSaves);
-    r[@"hasAny"]   = @(hasMods || hasSaves);
-    return r;
-}
-
-BOOL ameVISniffShouldSuggestIsolation(NSString *versionId) {
-    if (versionId.length == 0) return NO;
-    return [ameVISniffVersionFolder(versionId)[@"hasAny"] boolValue];
-}
-
-#pragma mark - ★ [VI-FLOW] B. 向导「弹到用户主动说『以后都不弹』为止」哨兵
-
-// ★ [VI-FLOW]（用户修正 1 + 补充）语义：
-//   * 哨兵【只】在用户于向导里点「以后不再提示」时写一次（幂等）—— 弹出时【绝不】写；
-//   * 未落哨兵 ⇒ ameVIWizardShouldPresent 返回 YES ⇒ 每次进启动器都会【再次出现】（不阻碍启动、可跳过）；
-//   * 已落哨兵 ⇒ 不再【自动】弹；实例设置页的「版本隔离向导」手动入口直接 present，不受本哨兵约束
-//     （否则用户想再看就没路了）。
-//   静态证明：哨兵【读】点唯一（ameVIWizardShouldPresent，只读不写）；
-//             哨兵【写】点唯一（ameVIWizardMarkDontShowAgain，仅由向导「以后不再提示」按钮调用）。
-static NSString *const kAmeVIWizardOffKey = @"internal.version_isolation_wizard_off";
-
-BOOL ameVIWizardShouldPresent(void) {
-    return ![getPrefObject(kAmeVIWizardOffKey) boolValue];   // 只读：未落哨兵 ⇒ 该弹
-}
-
-void ameVIWizardMarkDontShowAgain(void) {
-    setPrefObject(kAmeVIWizardOffKey, @YES);   // 幂等：重复调用结果一致；只在用户选择时写一次
-    NSLog(@"★ [VI-FLOW] 向导：用户选「以后不再提示」⇒ 哨兵已落（%@），之后不再自动弹", kAmeVIWizardOffKey);
-}
+// ★ [NO-VI] amePCLMigrateVersionIsolationOnce / amePCLSharedGameDirAbsolute /
+//   amePCLSharedGameDirForProfile（版本隔离一次性迁移与迁移"源/目标"解析）已随功能整体删除。
 
 #pragma mark - ★ [NO-BLOCK] 启动门禁统一判定（仅渲染器类可阻断）
 

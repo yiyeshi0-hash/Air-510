@@ -2709,12 +2709,7 @@ static NSString * const kImportedModpacksKey = @"ImportedModpacks";
         @"lastVersionId": versionId ?: @"",
         @"gameDir": gameDirRelative,
         @"created": [self iso8601StringFromDate:[NSDate date]],
-        @"type": @"modpack",
-        // ★ [VI-FLOW]（用户修正 2）：整合包来源的实例【默认开版本隔离】——显式落 versionIsolation="1"，
-        //   而不是跟随全局默认（全局默认仍为关，仅在整合包实例上例外）。
-        //   整合包数据本来就落在它自己的 gameDir（./custom_gamedir/<id>）里；显式落键只是让
-        //   「实例设置 → 版本隔离」把它显示为「隔离」，用户之后可自行改成共享/自动。
-        @"versionIsolation": @"1"
+        @"type": @"modpack"
     } mutableCopy];
 
     // 修复（参照 FCL/HMCL）：写入 javaVersion 字段

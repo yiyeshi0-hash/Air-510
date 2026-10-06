@@ -310,7 +310,7 @@ extern NSMutableArray *localVersionList;
             NSDictionary *profiles = PLProfiles.current.profiles;
             NSDictionary *prof = profiles[instanceName];
             if ([prof isKindOfClass:[NSDictionary class]]) {
-                // ★ [VER-ISOLATE-PCL] 版本隔离统一解析：隔离时 mods 落 versions/<版本 id>/mods
+                // gameDir 统一解析（版本隔离已删除 ⇒ 恒为 "."，显式自定义 gameDir 除外）
                 NSString *profGameDir = amePCLVersionGameDirSubpath(prof, nil);
                 if ([profGameDir isKindOfClass:[NSString class]] && profGameDir.length > 0 && ![profGameDir isEqualToString:@"."]) {
                     const char *env = getenv("POJAV_GAME_DIR");

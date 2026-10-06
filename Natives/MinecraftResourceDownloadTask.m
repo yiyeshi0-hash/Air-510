@@ -454,41 +454,21 @@ static const NSUInteger kMCStageIndexVerify = 5;
     for (NSDictionary *library in self.metadata[@"libraries"]) {
         NSString *name = library[@"name"];
 
-        NSMutableDictionary *artifact = library[@"downloads"][@"artifact"];
-        if (artifact == nil && [name containsString:@":"]) {
-            NSLog(@"[MCDL] Unknown artifact object for %@, attempting to generate one", name);
-            artifact = [[NSMutableDictionary alloc] init];
-            NSString *prefix = library[@"url"] == nil ? @"https://libraries.minecraft.net/" : [library[@"url"] stringByReplacingOccurrencesOfString:@"http://" withString:@"https://"];
-            NSArray *libParts = [name componentsSeparatedByString:@":"];
-            // ★ [DEMINE] 原为 libParts[2] 直接下标：name 只有 1 个冒号(2 段，非标准 Maven
-            //   三段坐标)时越界 NSRangeException 崩 App。缺段则跳过该库(不再生成 artifact)。
-            if (libParts.count < 3) {
-                NSLog(@"[DEMINE] skip artifact generation for non-3-part lib name: %@", name);
-                continue;
-            }
-            artifact[@"path"] = [NSString stringWithFormat:@"%1$@/%2$@/%3$@/%2$@-%3$@.jar", [libParts[0] stringByReplacingOccurrencesOfString:@"." withString:@"/"], libParts[1], libParts[2]];
-            artifact[@"url"] = [NSString stringWithFormat:@"%@%@", prefix, artifact[@"path"]];
-            // ★ [PREDL] Fabric/Quilt 的 meta profile 库条目【没有 downloads 块】，只有顶层
-            //   sha1/size（如 org.ow2.asm:asm:9.7.1、net.fabricmc:sponge-mixin）。
-            //   旧代码只读 library[checksums][0] ⇒ 生成的伪 artifact 丢 SHA1/长度：
-            //     1) 下载无完整性校验、截断不被发现；
-            //     2) 每次启动刷 “Warning: couldn't find SHA … have to assume it's good.”。
-            //   这里补读顶层 sha1/size；缺则保持 nil（仍走“仅存在性”兜底 —— intermediary /
-            //   fabric-loader 在 meta 里确实不带 sha1，无法校验）。
-            artifact[@"sha1"] = library[@"checksums"][0] ?: library[@"sha1"];
-            if (artifact[@"size"] == nil && library[@"size"] != nil) {
-                artifact[@"size"] = library[@"size"];
-            }
+        // ★ [MISS][LIB-LIST] 「下不下 / 下到哪」与启动准入门禁共用同一份判据：
+        //   MinecraftResourceUtils.resolvedLibraryArtifactForLaunch（skip / OS rules / 无
+        //   downloads 块时按 Maven 名生成 artifact）。任何返回 nil 的库：下载器不下、
+        //   门禁也不算缺件 ⇒ 两侧清单恒一致，不会再出现「一边说缺、一边不去下」。
+        NSDictionary *artifact = [MinecraftResourceUtils resolvedLibraryArtifactForLaunch:library];
+        if (artifact == nil) {
+            NSLog(@"[MDCL] Skipped library %@", name);
+            continue;
         }
 
         NSString *path = [NSString stringWithFormat:@"%s/libraries/%@", getenv("POJAV_GAME_DIR"), artifact[@"path"]];
         NSString *sha = artifact[@"sha1"];
         NSUInteger size = [artifact[@"size"] unsignedLongLongValue];
         NSString *url = artifact[@"url"];
-        if ([library[@"skip"] boolValue]) {
-            NSLog(@"[MDCL] Skipped library %@", name);
-            continue;
-        }
+        // ★ [MISS][LIB-LIST] skip 判定已并入 resolvedLibraryArtifactForLaunch（唯一真源），此处不再重复。
 
         NSURLSessionDownloadTask *task = [self createDownloadTask:url size:size sha:sha altName:name toPath:path success:nil];
         if (task) {
@@ -523,7 +503,7 @@ static const NSUInteger kMCStageIndexVerify = 5;
          * Since 1.19-pre1, setting the window icon on macOS invokes ObjC.
          * However, if an IOException occurs, it won't try to set.
          * We skip downloading the icon file to workaround this. */
-        if ([name hasSuffix:@"/minecraft.icns"]) {
+        if ([MinecraftResourceUtils assetObjectExcludedOnThisPlatform:name]) {
             [NSFileManager.defaultManager removeItemAtPath:path error:nil];
             continue;
         }

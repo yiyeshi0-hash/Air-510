@@ -5,7 +5,7 @@
 #import "utils.h"
 #import "BackgroundManager.h"
 #import "MultiplayerViewController.h"
-#import "McLanPortDetector.h"   // ★ [PORT-AUTO]
+#import "MpPortDetector.h"      // ★ [MP-PORT]（取代 [PORT-AUTO]：宽松解析 + 增量轮询 + 只认当前会话）
 
 /// FCL 风格的陶瓦联机界面（完美适配自定义启动器背景）
 ///
@@ -60,9 +60,11 @@
 @property(nonatomic, strong) UIScrollView *scrollView;
 @property(nonatomic, strong) UIView *contentView;
 
-/* ★ [PORT-AUTO] MC 局域网端口自动探测 */
-@property(nonatomic, strong) McLanPortDetector *portDetector;
+/* ★ [MP-PORT] MC 局域网端口自动探测（取代 [PORT-AUTO]） */
+@property(nonatomic, strong) MpPortDetector *portDetector;
 @property(nonatomic, copy, nullable) NSString *autoDetectedPortText;   /* 上次自动填入的端口文本 */
+@property(nonatomic, assign) BOOL autoFilledFromLAN;                   /* 当前字段里的值是否由本页自动填入 */
+@property(nonatomic, assign) BOOL mpPageVisible;                       /* ★ [MP-PORT] 页面是否已真正上屏 */
 
 @end
 
@@ -156,12 +158,22 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
     [[BackgroundManager sharedManager] applyEffectToNavigationBar:self.navigationController.navigationBar];
     [self applyBackgroundEffects];
-    [self updatePortAutoDetection];   // ★ [PORT-AUTO] 进入页面：创建面板可见则开始探测端口
+    [self updatePortAutoDetection];   // ★ [MP-PORT] 进入页面：创建面板可见则开始探测端口
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    /* ★ [MP-PORT] 关键修复：viewWillAppear 时视图往往还没挂进 window（模态呈现时
+       self.view.window == nil），旧逻辑据它判「页面可见」⇒ 探测经常根本没启动。
+       这里在【真正上屏之后】再判定一次，保证轮询一定起得来。 */
+    self.mpPageVisible = YES;
+    [self updatePortAutoDetection];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self stopPortAutoDetection];     // ★ [PORT-AUTO] 离开页面即取消
+    self.mpPageVisible = NO;          // ★ [MP-PORT] 先落可见性，再停探测
+    [self stopPortAutoDetection];     // ★ [MP-PORT] 离开页面即取消
     /* push 子页面时显示导航栏（子页面需要返回按钮） */
     if (self.navigationController &&
         self.navigationController.viewControllers.firstObject == self &&
@@ -402,6 +414,7 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
                                             keyboardType:UIKeyboardTypeNumberPad];
     self.portField.text = @"25565";
     self.autoDetectedPortText = self.portField.text;   // ★ [PORT-AUTO] 默认值不算「用户手改」
+    self.autoFilledFromLAN = NO;                       // ★ [MP-PORT] 默认值不是「我们探测填的」
     self.portField.delegate = self;
     [self.createPanel addSubview:self.portField];
 
@@ -575,7 +588,7 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     BOOL isCreate = (sender.selectedSegmentIndex == 0);
     self.createPanel.hidden = !isCreate;
     self.joinPanel.hidden = isCreate;
-    [self updatePortAutoDetection];   // ★ [PORT-AUTO] 仅在「创建房间」面板可见时探测
+    [self updatePortAutoDetection];   // ★ [MP-PORT] 仅在「创建房间」面板可见时探测
 }
 
 #pragma mark - Actions
@@ -589,7 +602,7 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     }
     [self.view endEditing:YES];
     // ★ [PORT-AUTO] 用当前字段值创建（可能是自动探测填入，也可能是用户手改）
-    NSLog(@"[PORT-AUTO] create room using port=%u (autoDetected=%@)", port,
+    NSLog(@"[MP-PORT] create room using port=%u (autoDetected=%@)", port,
           self.autoDetectedPortText ?: @"(nil)");
     [self stopPortAutoDetection];   // 会话开始，停止探测
     NSString *playerName = [self currentPlayerName];
@@ -749,7 +762,7 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
         self.stageLabel.text = mgr.lastError;
     }
 
-    [self updatePortAutoDetection];   // ★ [PORT-AUTO] 会话开始/结束会切换探测状态
+    [self updatePortAutoDetection];   // ★ [MP-PORT] 会话开始/结束会切换探测状态
 }
 
 - (void)refreshPlayersList:(NSArray<TerracottaPlayerProfile *> *)players
@@ -881,18 +894,19 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     return nil;
 }
 
-#pragma mark - ★ [PORT-AUTO] 局域网端口自动探测
+#pragma mark - ★ [MP-PORT] 局域网端口自动探测
 
-- (McLanPortDetector *)portDetector {
-    if (_portDetector == nil) _portDetector = [[McLanPortDetector alloc] init];
+- (MpPortDetector *)portDetector {
+    if (_portDetector == nil) _portDetector = [[MpPortDetector alloc] init];
     return _portDetector;
 }
 
 /// 仅当「创建房间」面板可见且当前未联机时探测；其余情况停止。
 - (void)updatePortAutoDetection {
     TerracottaManager *mgr = [TerracottaManager shared];
-    BOOL visible = self.isViewLoaded && self.view.window != nil;
-    BOOL shouldRun = visible && !self.createPanel.hidden && mgr.status == TerracottaStatusDisconnected;
+    /* ★ [MP-PORT] 用显式可见性（viewDidAppear/viewWillDisappear 维护），不再用
+       self.view.window —— 后者在 viewWillAppear 阶段常为 nil，会让探测永远起不来。 */
+    BOOL shouldRun = self.mpPageVisible && !self.createPanel.hidden && mgr.status == TerracottaStatusDisconnected;
     if (shouldRun) {
         [self startPortAutoDetection];
     } else {
@@ -902,14 +916,14 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
 
 - (void)startPortAutoDetection {
     if (self.portDetector.polling) return;
-    NSString *gameDir = [McLanPortDetector resolveGameDirectoryWithInstanceName:getPrefObject(@"general.game_directory")];
-    NSString *home = [McLanPortDetector launcherHome];
-    NSLog(@"[PORT-AUTO] begin auto-detect gameDir=%@ home=%@", gameDir ?: @"(nil)", home ?: @"(nil)");
+    NSString *instance = [MpPortDetector instanceNameFromPreferences];
+    NSLog(@"[MP-PORT] begin auto-detect instance=%@ home=%@",
+          instance ?: @"(auto)", [MpPortDetector launcherHome] ?: @"(nil)");
     __weak typeof(self) weakSelf = self;
-    [self.portDetector startPollingGameDirectory:gameDir launcherHome:home handler:^(uint16_t port) {
+    [self.portDetector startPollingWithInstanceName:instance handler:^(MpPortResult *result) {
         typeof(self) strongSelf = weakSelf;
         if (strongSelf == nil) return;
-        [strongSelf applyAutoDetectedPort:port];
+        [strongSelf applyAutoDetectedPort:result];
     }];
 }
 
@@ -917,23 +931,45 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     [self.portDetector stopPolling];
 }
 
-/// 把探测到的端口填入现有端口字段（尊重用户手改：字段被手改过则不覆盖）。
-- (void)applyAutoDetectedPort:(uint16_t)port {
-    if (self.view.window == nil) return;   // 已离开页面
-    NSString *text = [NSString stringWithFormat:@"%u", port];
+/// 把探测结果落到现有端口字段（尊重用户手改：字段被手改过则不覆盖）。
+- (void)applyAutoDetectedPort:(MpPortResult *)result {
+    if (!self.mpPageVisible) return;                 // 已离开页面
+    if (result.status == MpPortStatusUnknown) return; // 还没开局域网：等轮询（不写死值、不崩溃）
+
     BOOL userEdited = (self.portField.text.length > 0 &&
                        ![self.portField.text isEqualToString:self.autoDetectedPortText ?: @""]);
+
+    /* ★ [MP-PORT] 局域网已关闭 ⇒ 当前没有可用端口：清掉「我们自动填进去的值」，
+       避免拿一个已经失效的端口去开房（房客必然连不上）。只清我们填的，不动用户手填。 */
+    if (result.status == MpPortStatusUnpublished) {
+        if (!self.autoFilledFromLAN) return;
+        if (userEdited) {
+            NSLog(@"[MP-PORT] LAN unpublished but port field user-edited (%@) -> keep", self.portField.text);
+            return;
+        }
+        self.autoFilledFromLAN = NO;
+        self.autoDetectedPortText = nil;
+        self.portField.text = @"";
+        NSLog(@"[MP-PORT] LAN unpublished -> cleared auto-filled port");
+        [self showToast:TCLocalized(@"i18n_str_2071", @"局域网已关闭，检测到的端口已失效，请重新「对局域网开放」")];
+        return;
+    }
+
+    /* Published */
+    NSString *text = [NSString stringWithFormat:@"%u", result.port];
     if (userEdited) {
-        NSLog(@"[PORT-AUTO] detected=%u but port field user-edited (%@) -> keep", port, self.portField.text);
+        NSLog(@"[MP-PORT] detected=%u but port field user-edited (%@) -> keep", result.port, self.portField.text);
         return;
     }
     self.autoDetectedPortText = text;
+    self.autoFilledFromLAN = YES;
     if ([self.portField.text isEqualToString:text]) {
-        NSLog(@"[PORT-AUTO] detected=%u (already in port field)", port);
+        NSLog(@"[MP-PORT] detected=%u (already in port field)", result.port);
         return;
     }
     self.portField.text = text;
-    NSLog(@"[PORT-AUTO] auto-filled port field with %u", port);
+    NSLog(@"[MP-PORT] auto-filled port field with %u (source=%@%@)", result.port,
+          result.sourcePath.lastPathComponent ?: @"-", result.fromGenericFallback ? @" generic" : @"");
     [self showToast:[NSString stringWithFormat:TCLocalized(@"i18n_str_2070", @"已自动检测到局域网端口 %@"), text]];
 }
 

@@ -1592,6 +1592,7 @@
 "i18n_str_2068" = "我";
 "i18n_str_2069" = "房客";
 "i18n_str_2070" = "已自动检测到局域网端口 %@";
+"i18n_str_2071" = "局域网已关闭，检测到的端口已失效，请重新「对局域网开放」";
 "i18n_str_1029" = "未联机";
 "i18n_str_1031" = "加入房间中…";
 "i18n_str_1033" = "联机出错";
@@ -1995,6 +1996,11 @@
 "preference.title.glass_handdrawn" = "自绘高光";
 "preference.style.footer.pure" = "默认仅用系统材质：材质完全由系统提供（iOS 26 及以上为液态玻璃），不叠加任何自绘玻璃。";
 "preference.style.footer.handdrawn" = "已开启自绘高光：在系统玻璃之上额外叠加描边 / 内高光（可选）。";
+"preference.title.foreground_mode" = "文字颜色";
+"preference.fg.auto" = "自动";
+"preference.fg.dark" = "深色";
+"preference.fg.light" = "浅色";
+"preference.fg.footer" = "自定义背景上的文字颜色。「自动」按背景亮度选深色或浅色文字,保证可读。";
 "preference.title.launcher_language" = "语言";
 "preference.lang.title" = "语言";
 "preference.lang.follow_system" = "跟随系统";
@@ -2086,5 +2092,7 @@
 "i18n_str_9108" = "启动已延后：本地仍缺 %ld 个必需文件。正在等待下载/校验完成……";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9109" = "等待超时：仍缺 %ld 个必需文件。为避免缺件报错，本次启动已取消；请等下载完成（或联网后）重试。";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9110" = "启动前校验/补齐游戏文件（本地校验，缺失才下载）";  // ★ [PREDL]
+"i18n_str_9111" = "缺少游戏文件";  // ★ [MISS] 影响游玩的缺件（自动补下后仍缺）标题
+"i18n_str_9112" = "已自动补下，但仍有 %ld 个必需文件缺失。可以「重试」，也可以「继续启动」（可能启动失败）。";  // ★ [MISS]
 /* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
 "ame_jit_status_perm_only" = "JIT：权限已给，待验证";

@@ -48,7 +48,7 @@
 #import "LanPortDetector.h"
 #import "ZeroTierBridge.h"
 #import "utils.h"
-#import "McLanPortDetector.h"   // ★ [PORT-AUTO]
+#import "MpPortDetector.h"       // ★ [MP-PORT]（取代 [PORT-AUTO]：宽松解析 + 增量轮询 + 只认当前会话）
 
 /// 本地化辅助函数
 /// 优先通过 localize() 查找本地化文本；若未找到（返回值等于 key），则使用传入的 fallback。
@@ -110,6 +110,17 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
 /// 用户无法知道后台进度，只能干等 15-30 秒直到成功或失败。
 /// 现在通过此 Alert 实时更新进度，让用户看到详细的步骤信息。
 @property (nonatomic, strong, nullable) UIAlertController *connectionProgressAlert;
+
+#pragma mark - ★ [MP-PORT] 房主端口自动探测（对话框开着期间持续轮询并回填）
+
+/// 房主流程「手动输入端口」对话框期间运行；检测到 MC 实际端口就回填（不覆盖用户手改）
+@property (nonatomic, strong, nullable) MpPortDetector *mpPortDetector;
+/// 上次由我们自动填进去的端口文本（用于区分「用户手改」）
+@property (nonatomic, copy, nullable) NSString *mpPortAutoText;
+/// 当前端口对话框的输入框（弱引用：由 Alert 持有，Alert 关闭后为 nil）
+@property (nonatomic, weak, nullable) UITextField *mpPortField;
+/// 当前端口对话框（弱引用，用于同步更新提示文案）
+@property (nonatomic, weak, nullable) UIAlertController *mpPortAlert;
 
 @end
 
@@ -257,6 +268,9 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         self.navigationController.viewControllers.firstObject != self) {
         self.navigationController.navigationBarHidden = YES;
     }
+    // ★ [MP-PORT] 离开页面即停止房主端口轮询（对话框已消失时回调会自行短路）
+    [self.mpPortDetector stopPolling];
+    self.mpPortField = nil;
 }
 
 - (void)backgroundEffectChanged {
@@ -273,6 +287,8 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
 }
 
 - (void)dealloc {
+    // ★ [MP-PORT] 停止端口轮询（避免定时器残留）
+    [self.mpPortDetector stopPolling];
     // 移除通知观察者，避免 dealloc 后收到通知导致崩溃
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     // 清除代理引用，避免悬空指针
@@ -1091,49 +1107,50 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
 - (void)showManualPortInputAlert {
     NSString *localIP = [[MultiplayerManager sharedManager] currentLocalIP] ?: @"-";
 
-    // ★ [PORT-AUTO] 自动探测 MC 局域网端口（读游戏日志取最后一次出现的端口），预填到输入框
-    NSString *autoGameDir = [McLanPortDetector resolveGameDirectoryWithInstanceName:getPrefObject(@"general.game_directory")];
-    uint16_t autoPort = [McLanPortDetector detectPortInGameDirectory:autoGameDir
-                                                       launcherHome:[McLanPortDetector launcherHome]];
-    NSString *autoPortText = (autoPort > 0) ? [NSString stringWithFormat:@"%u", autoPort] : nil;
-    NSLog(@"[PORT-AUTO] host manual-port dialog prefill: gameDir=%@ detected=%u", autoGameDir ?: @"(nil)", autoPort);
+    // ★ [MP-PORT] 自动探测 MC 局域网**实际**端口（宽松解析 + 只认当前会话），预填到输入框。
+    //   这里只做一次同步预判；真正可靠的是下面的轮询 —— 用户可能在对话框开着的时候
+    //   才去 MC 点「对局域网开放」，旧实现只扫一次 ⇒ 永远填不上。
+    MpPortDetector *detector = [[MpPortDetector alloc] init];
+    self.mpPortDetector = detector;
+    MpPortResult *autoResult = [detector detectNowWithInstanceName:[MpPortDetector instanceNameFromPreferences]];
+    NSString *autoPortText = (autoResult.status == MpPortStatusPublished)
+        ? [NSString stringWithFormat:@"%u", autoResult.port] : nil;
+    self.mpPortAutoText = autoPortText;
+    NSLog(@"[MP-PORT] host manual-port dialog prefill: status=%ld port=%u src=%@",
+          (long)autoResult.status, autoResult.port, autoResult.sourcePath ?: @"(nil)");
 
-    NSMutableString *message = [NSMutableString stringWithFormat:@"%@\n\n%@\n%@\n\n%@: %@",
-                         MPLocalized(@"mp.host.connected_msg", @"已连接到联机网络，请在 MC 中开放局域网后输入端口号"),
-                         MPLocalized(@"mp.host.tip.create_world", @"请在 MC 中创建世界并点击「对局域网开放」"),
-                         MPLocalized(@"mp.host.tip.manual_port", @"开放局域网后，MC 会在聊天框显示端口号，请将其输入下方"),
-                         MPLocalized(@"mp.host.local_ip", @"本机 IP"),
-                         localIP];
-    if (autoPortText.length > 0) {
-        [message appendFormat:@"\n\n%@", [NSString stringWithFormat:
-            MPLocalized(@"mp.host.port_autodetected", @"已自动检测到端口 %@，可直接生成分享代码（也可手动修改）"), autoPortText]];
-    } else {
-        [message appendFormat:@"\n\n%@", MPLocalized(@"mp.host.port_notdetected", @"未检测到端口，请先在游戏里「对局域网开放」（也可手动填写）")];
-    }
+    NSString *message = [self mpPortDialogMessageWithPortText:autoPortText localIP:localIP];
 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:MPLocalized(@"mp.host.connected_title", @"联机已开启")
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
 
+    __weak typeof(self) weakSelf = self;
     [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
         textField.placeholder = MPLocalized(@"mp.host.port_placeholder", @"端口号（如 54321）");
         textField.keyboardType = UIKeyboardTypeNumberPad;
         textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
         textField.autocorrectionType = UITextAutocorrectionTypeNo;
         textField.clearButtonMode = UITextFieldViewModeWhileEditing;
-        if (autoPortText.length > 0) textField.text = autoPortText;   // ★ [PORT-AUTO] 预填
+        if (autoPortText.length > 0) textField.text = autoPortText;   // ★ [MP-PORT] 预填
+        weakSelf.mpPortField = textField;                             // ★ [MP-PORT] 供轮询回填
     }];
 
     [alert addAction:[UIAlertAction actionWithTitle:MPLocalized(@"common.cancel", @"取消")
                                               style:UIAlertActionStyleCancel
-                                            handler:nil]];
+                                            handler:^(UIAlertAction *action) {
+        // ★ [MP-PORT] 关闭对话框即停止轮询（避免离开后还在扫日志）
+        [weakSelf.mpPortDetector stopPolling];
+        weakSelf.mpPortField = nil;
+    }]];
 
-    __weak typeof(self) weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:MPLocalized(@"mp.host.generate_code", @"生成分享代码")
                                               style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction *action) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
+        [strongSelf.mpPortDetector stopPolling];   // ★ [MP-PORT] 已生成，停止轮询
+        strongSelf.mpPortField = nil;
 
         UITextField *field = alert.textFields.firstObject;
         NSString *port = [field.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -1161,7 +1178,59 @@ NS_INLINE NSString *MPLocalized(NSString *key, NSString *fallback) {
         [strongSelf generateShareCodeWithPort:port];
     }]];
 
+    /* ★ [MP-PORT] 对话框开着期间持续轮询 —— 「开局域网 → app 自动拿到端口」的关键：
+       用户完全可能先点「当房主」，再回 MC 点「对局域网开放」；旧实现只在这一刻扫一次，
+       晚开局域网就永远填不上（正是「自动获取端口有问题」的典型场景）。 */
+    self.mpPortAlert = alert;
+    [detector startPollingWithInstanceName:[MpPortDetector instanceNameFromPreferences]
+                                   handler:^(MpPortResult *result) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf == nil) return;
+        UITextField *field = strongSelf.mpPortField;
+        if (field == nil) return;                       // 对话框已关闭
+        NSString *dLocalIP = [[MultiplayerManager sharedManager] currentLocalIP] ?: @"-";
+        if (result.status == MpPortStatusPublished) {
+            NSString *text = [NSString stringWithFormat:@"%u", result.port];
+            BOOL userEdited = (field.text.length > 0 &&
+                               ![field.text isEqualToString:strongSelf.mpPortAutoText ?: @""]);
+            if (userEdited) {
+                NSLog(@"[MP-PORT] zerotier dialog: detected=%u but user-edited (%@) -> keep", result.port, field.text);
+                return;
+            }
+            strongSelf.mpPortAutoText = text;
+            if (![field.text isEqualToString:text]) {
+                field.text = text;
+                NSLog(@"[MP-PORT] zerotier dialog auto-filled port=%u (src=%@%@)", result.port,
+                      result.sourcePath.lastPathComponent ?: @"-", result.fromGenericFallback ? @" generic" : @"");
+            }
+            strongSelf.mpPortAlert.message = [strongSelf mpPortDialogMessageWithPortText:text localIP:dLocalIP];
+        } else if (result.status == MpPortStatusUnpublished) {
+            NSLog(@"[MP-PORT] zerotier dialog: LAN unpublished -> ask user to re-open");
+            strongSelf.mpPortAutoText = nil;
+            strongSelf.mpPortAlert.message = [strongSelf mpPortDialogMessageWithPortText:nil localIP:dLocalIP];
+        }
+    }];
+
     [self presentViewController:alert animated:YES completion:nil];
+}
+
+#pragma mark - ★ [MP-PORT] 房主端口对话框辅助
+
+/// 端口对话框提示文案（首次构建与轮询回填时复用，保证两边一致）
+- (NSString *)mpPortDialogMessageWithPortText:(NSString *)portText localIP:(NSString *)localIP {
+    NSMutableString *message = [NSMutableString stringWithFormat:@"%@\n\n%@\n%@\n\n%@: %@",
+                         MPLocalized(@"mp.host.connected_msg", @"已连接到联机网络，请在 MC 中开放局域网后输入端口号"),
+                         MPLocalized(@"mp.host.tip.create_world", @"请在 MC 中创建世界并点击「对局域网开放」"),
+                         MPLocalized(@"mp.host.tip.manual_port", @"开放局域网后，MC 会在聊天框显示端口号，请将其输入下方"),
+                         MPLocalized(@"mp.host.local_ip", @"本机 IP"),
+                         localIP ?: @"-"];
+    if (portText.length > 0) {
+        [message appendFormat:@"\n\n%@", [NSString stringWithFormat:
+            MPLocalized(@"mp.host.port_autodetected", @"已自动检测到端口 %@，可直接生成分享代码（也可手动修改）"), portText]];
+    } else {
+        [message appendFormat:@"\n\n%@", MPLocalized(@"mp.host.port_notdetected", @"未检测到端口，请先在游戏里「对局域网开放」（也可手动填写）")];
+    }
+    return message;
 }
 
 #pragma mark - 游戏内模式：LAN 端口检测回调

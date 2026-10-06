@@ -247,7 +247,10 @@ static inline void AmeApplyGlassChipStyle(UIView *host, CGFloat radius, BOOL str
         AmeRemoveGlassBackdrop(host);   // 运行期从液态切回原生时,卸掉残留的材质层
         UIColor *ameChipFill = nil;
         if (@available(iOS 13.0, *)) {
-            ameChipFill = [UIColor secondarySystemFillColor];
+            // ★ [GLASS-BG] 原值 secondarySystemFillColor(≈12% 灰,极透)在无壁纸的默认渐变底上
+            //   ⇒ 芯片/胶囊整颗"透"出背景(用户报的「切回原生还透明」)。
+            //   新值 secondarySystemBackgroundColor:不透明系统底,芯片/胶囊读得出形状,仍是原生观感。
+            ameChipFill = [UIColor secondarySystemBackgroundColor];
         } else {
             ameChipFill = [[UIColor blackColor] colorWithAlphaComponent:0.08];
         }

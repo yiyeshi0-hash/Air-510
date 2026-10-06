@@ -67,6 +67,12 @@
                                              selector:@selector(reapplyBackgroundEffect)
                                                  name:@"BackgroundUIEffectChanged"
                                                object:nil];
+
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重建本页(行/数值标签取自适应前景)
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(ameApplyAdaptiveForegroundToBgSettings)
+                                                 name:AMEForegroundContrastChangedNotification
+                                               object:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -141,7 +147,8 @@
 - (void)setupSections {
     // Sections: [UI效果设置], [选择背景类型], [图片背景, 视频背景], [恢复默认背景, 清除背景]
     self.sections = @[
-        @[localize(@"i18n_str_57", nil), localize(@"i18n_str_1296", nil), localize(@"i18n_str_1297", nil)],
+        @[localize(@"i18n_str_57", nil), localize(@"i18n_str_1296", nil), localize(@"i18n_str_1297", nil),
+          localize(@"preference.title.foreground_mode", nil)],   // ★ [BG-CONTRAST] row3 = 文字颜色(自动/深色/浅色)
         @[localize(@"i18n_str_60", nil)],
         @[localize(@"i18n_str_61", nil), localize(@"i18n_str_55", nil)],
         @[localize(@"i18n_str_62", nil), localize(@"i18n_str_63", nil)],
@@ -242,7 +249,7 @@
             
             UILabel *valueLabel = [cell.contentView viewWithTag:201];
             valueLabel.text = [NSString stringWithFormat:@"%.0f%%", manager.uiOpacity * 100];
-            valueLabel.textColor = hasBackground ? [UIColor whiteColor] : [UIColor labelColor];
+            valueLabel.textColor = hasBackground ? AMEForegroundColor(AMEForegroundRoleSecondary) : [UIColor labelColor];   // ★ [BG-CONTRAST]
             self.opacityValueLabel = valueLabel;
             
             cell.textLabel.text = nil;
@@ -285,11 +292,49 @@
             
             UILabel *valueLabel = [cell.contentView viewWithTag:301];
             valueLabel.text = [NSString stringWithFormat:@"%.0f%%", manager.blurIntensity * 100];
-            valueLabel.textColor = hasBackground ? [UIColor whiteColor] : [UIColor labelColor];
+            valueLabel.textColor = hasBackground ? AMEForegroundColor(AMEForegroundRoleSecondary) : [UIColor labelColor];   // ★ [BG-CONTRAST]
             
             cell.textLabel.text = nil;
             cell.imageView.image = [UIImage systemImageNamed:@"slider.horizontal.3"];
             
+            return cell;
+        } else if (indexPath.row == 3) {
+            // ★ [BG-CONTRAST] row3:文字颜色(自动 / 深色 / 浅色) —— 自定义背景下的自适应前景
+            static NSString *fgModeCellIdentifier = @"FgModeCell";
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:fgModeCellIdentifier];
+            UISegmentedControl *seg = nil;
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:fgModeCellIdentifier];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+                seg = [[UISegmentedControl alloc] initWithItems:@[
+                    localize(@"preference.fg.auto", nil),
+                    localize(@"preference.fg.dark", nil),
+                    localize(@"preference.fg.light", nil),
+                ]];
+                seg.tag = 430;   // ★ [BG-CONTRAST]
+                [seg addTarget:self action:@selector(foregroundModeChanged:) forControlEvents:UIControlEventValueChanged];
+                seg.translatesAutoresizingMaskIntoConstraints = NO;
+                [cell.contentView addSubview:seg];
+                UILayoutGuide *ameFgMarginGuide = cell.contentView.layoutMarginsGuide;
+                [NSLayoutConstraint activateConstraints:@[
+                    [seg.leadingAnchor  constraintEqualToAnchor:ameFgMarginGuide.leadingAnchor],
+                    [seg.trailingAnchor constraintEqualToAnchor:ameFgMarginGuide.trailingAnchor],
+                    [seg.centerYAnchor  constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                    [seg.heightAnchor    constraintGreaterThanOrEqualToConstant:32.0],
+                ]];
+                cell.accessoryView = nil;
+            } else {
+                seg = (UISegmentedControl *)[cell.contentView viewWithTag:430];
+            }
+            cell.textLabel.text = nil;
+            cell.imageView.image = nil;
+            if ([seg isKindOfClass:[UISegmentedControl class]]) {
+                [seg setTitle:localize(@"preference.fg.auto", nil)  forSegmentAtIndex:AMEForegroundModeAuto];
+                [seg setTitle:localize(@"preference.fg.dark", nil)  forSegmentAtIndex:AMEForegroundModeForceDark];
+                [seg setTitle:localize(@"preference.fg.light", nil) forSegmentAtIndex:AMEForegroundModeForceLight];
+                seg.selectedSegmentIndex = (NSInteger)manager.foregroundMode;
+            }
+            [self styleCell:cell hasBackground:hasBackground];
             return cell;
         }
     }
@@ -406,7 +451,7 @@
         UILabel *valueLabel = [cell.contentView viewWithTag:411];
         if ([valueLabel isKindOfClass:[UILabel class]]) {
             valueLabel.text = [NSString stringWithFormat:@"%.0f%%", manager.glassRimStrength * 100];
-            valueLabel.textColor = hasBackground ? [UIColor whiteColor] : [UIColor labelColor];
+            valueLabel.textColor = hasBackground ? AMEForegroundColor(AMEForegroundRoleSecondary) : [UIColor labelColor];   // ★ [BG-CONTRAST]
             valueLabel.alpha = ameSliderEnabled ? 1.0 : 0.35;
         }
         cell.imageView.alpha = ameSliderEnabled ? 1.0 : 0.35;
@@ -483,10 +528,24 @@
     return UITableViewAutomaticDimension;
 }
 
+// ★ [BG-CONTRAST] 背景/前景模式变化 ⇒ 重建本页
+- (void)ameApplyAdaptiveForegroundToBgSettings {
+    [self.tableView reloadData];
+}
+
+// ★ [BG-CONTRAST] 分段控件:写入前景模式(自动/深色/浅色)⇒ BackgroundManager 持久化 + 广播
+- (void)foregroundModeChanged:(UISegmentedControl *)seg {
+    BackgroundManager *manager = [BackgroundManager sharedManager];
+    manager.foregroundMode = (AMEForegroundMode)seg.selectedSegmentIndex;
+    [self.tableView reloadData];
+    NSLog(@"[bg-contrast] 用户设置文字颜色模式 = %ld", (long)seg.selectedSegmentIndex);
+}
+
 - (void)styleCell:(UITableViewCell *)cell hasBackground:(BOOL)hasBackground {
     if (hasBackground) {
         [[BackgroundManager sharedManager] applyEffectToCell:cell];
-        cell.textLabel.textColor = [UIColor whiteColor];
+        cell.textLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
+        cell.detailTextLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     } else {
         cell.backgroundColor = [UIColor secondarySystemBackgroundColor];
         cell.textLabel.textColor = [UIColor labelColor];

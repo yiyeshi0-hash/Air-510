@@ -639,16 +639,7 @@
               @"type": self.typeSwitch,
               @"enableCondition": whenNotInGame
             },
-            // ★ [VER-ISOLATE-PCL] 默认版本隔离（对齐 PCL-CE「默认实例隔离」LaunchArgumentIndieV2）：
-            // 关闭（默认）= 实例内各版本共享 mods/config/saves（现状）；
-            // 开启 = 新版本/未显式设置的版本默认隔离到 <实例根>/versions/<版本 id>/。
-            // 单版本可在「编辑配置」页用 versionIsolation 开关覆盖（对应 PCL 的实例设置页）。
-            @{@"key": @"version_isolation",
-              @"hasDetail": @YES,
-              @"icon": @"square.on.square.dashed",
-              @"type": self.typeSwitch,
-              @"enableCondition": whenNotInGame
-            },
+            // ★ [NO-VI] 原「默认版本隔离」（全局默认 general.version_isolation）开关行已随功能删除。
             @{@"key": @"announcement_preview_level",
               @"hasDetail": @YES,
               @"icon": @"megaphone",
@@ -1500,6 +1491,12 @@
                                                  name:@"BackgroundUIEffectChanged"
                                                object:nil];
 
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重建列表以取自适应前景色
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(ameApplyAdaptiveForegroundToSettings)
+                                                 name:AMEForegroundContrastChangedNotification
+                                               object:nil];
+
     // 监听背景 UI 效果变化通知：当用户在背景设置中切换毛玻璃/半透明或调整透明度时，
     // 重新调用 makeViewControllerTransparent 以应用最新的视觉效果，保证背景始终正确透出。
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -1737,6 +1734,13 @@
     [self dismissViewControllerAnimated:YES completion:nil];
 }
 
+// ★ [BG-CONTRAST] 背景/前景模式变化 ⇒ 重建列表(表头/行内/表尾一律重取自适应前景)
+- (void)ameApplyAdaptiveForegroundToSettings {
+    [self.tableView reloadData];
+    NSLog(@"[bg-contrast] 设置页已重刷前景色 · %@",
+          [[BackgroundManager sharedManager] foregroundDiagnostics]);
+}
+
 - (void)handleBackgroundUIEffectChanged:(NSNotification *)notification {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.tableView reloadData];
@@ -1896,13 +1900,13 @@
         [[BackgroundManager sharedManager] applyEffectToCell:cell];
 
         // Set white text for better visibility on dark background
-        cell.textLabel.textColor = [UIColor whiteColor];
-        cell.textLabel.shadowColor = [UIColor blackColor];
+        cell.textLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
+        cell.textLabel.shadowColor = AMEForegroundShadowColor();   // ★ [BG-CONTRAST]
         cell.textLabel.shadowOffset = CGSizeMake(0, 1);
 
         // Detail text light gray
-        cell.detailTextLabel.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
-        cell.detailTextLabel.shadowColor = [UIColor blackColor];
+        cell.detailTextLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
+        cell.detailTextLabel.shadowColor = AMEForegroundShadowColor();   // ★ [BG-CONTRAST]
         cell.detailTextLabel.shadowOffset = CGSizeMake(0, 1);
 
         // Tint color for icons and accessories：使用主题强调色（accentColor）
@@ -1927,7 +1931,7 @@
             // Style text fields
             if ([subview isKindOfClass:[UITextField class]]) {
                 UITextField *textField = (UITextField *)subview;
-                textField.textColor = [UIColor whiteColor];
+                textField.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
                 textField.backgroundColor = [UIColor colorWithWhite:0.2 alpha:0.6];
                 textField.layer.cornerRadius = 8;
                 textField.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 连续圆角(与系统卡片一致)
@@ -1936,8 +1940,8 @@
             // Style labels
             if ([subview isKindOfClass:[UILabel class]]) {
                 UILabel *label = (UILabel *)subview;
-                label.textColor = [UIColor whiteColor];
-                label.shadowColor = [UIColor blackColor];
+                label.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
+                label.shadowColor = AMEForegroundShadowColor();   // ★ [BG-CONTRAST]
                 label.shadowOffset = CGSizeMake(0, 1);
             }
         }
@@ -1945,7 +1949,7 @@
         // Style the picker label if exists
         if (cell.accessoryView && [cell.accessoryView isKindOfClass:[UILabel class]]) {
             UILabel *pickerLabel = (UILabel *)cell.accessoryView;
-            pickerLabel.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
+            pickerLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
         }
     } else {
         // Reset to default when no background
@@ -2106,8 +2110,8 @@
     if ([[BackgroundManager sharedManager] hasBackground]) {
         if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
             UITableViewHeaderFooterView *header = (UITableViewHeaderFooterView *)view;
-            header.textLabel.textColor = [UIColor whiteColor];
-            header.textLabel.shadowColor = [UIColor blackColor];
+            header.textLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
+            header.textLabel.shadowColor = AMEForegroundShadowColor();   // ★ [BG-CONTRAST]
             header.textLabel.shadowOffset = CGSizeMake(0, 1);
             header.backgroundView = [[UIView alloc] init];
             header.backgroundView.backgroundColor = [UIColor clearColor];
@@ -2150,8 +2154,8 @@
     if ([[BackgroundManager sharedManager] hasBackground]) {
         if ([view isKindOfClass:[UITableViewHeaderFooterView class]]) {
             UITableViewHeaderFooterView *footer = (UITableViewHeaderFooterView *)view;
-            footer.textLabel.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
-            footer.textLabel.shadowColor = [UIColor blackColor];
+            footer.textLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
+            footer.textLabel.shadowColor = AMEForegroundShadowColor();   // ★ [BG-CONTRAST]
             footer.textLabel.shadowOffset = CGSizeMake(0, 1);
             footer.backgroundView = [[UIView alloc] init];
             footer.backgroundView.backgroundColor = [UIColor clearColor];

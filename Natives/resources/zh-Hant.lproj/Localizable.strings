@@ -1638,6 +1638,7 @@
 "i18n_str_2068" = "我";
 "i18n_str_2069" = "房客";
 "i18n_str_2070" = "已自动检测到局域网端口 %@";
+"i18n_str_2071" = "區域網路已關閉，偵測到的連接埠已失效，請重新「對區域網路開放」";
 "i18n_str_1029" = "未联机";
 "i18n_str_1031" = "加入房间中…";
 "i18n_str_1033" = "联机出错";
@@ -2058,6 +2059,11 @@
 "preference.title.glass_handdrawn" = "自繪高光";
 "preference.style.footer.pure" = "預設僅用系統材質：材質完全由系統提供（iOS 26 及以上為液態玻璃），不疊加任何自繪玻璃。";
 "preference.style.footer.handdrawn" = "已開啟自繪高光：在系統玻璃之上額外疊加描邊 / 內高光（可選）。";
+"preference.title.foreground_mode" = "文字顏色";
+"preference.fg.auto" = "自動";
+"preference.fg.dark" = "深色";
+"preference.fg.light" = "淺色";
+"preference.fg.footer" = "自訂背景上的文字顏色。「自動」依背景亮度選深色或淺色文字,確保可讀。";
 
 // ★ [LANG-SWITCH] 啟動器介面語言切換(跟隨系統 + 自動列舉 .lproj)
 "preference.title.launcher_language" = "語言";
@@ -2254,6 +2260,8 @@
 "i18n_str_9108" = "啟動已延後：本機仍缺 %ld 個必要檔案。正在等待下載/驗證完成……";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9109" = "等待逾時：仍缺 %ld 個必要檔案。為避免缺件錯誤，本次啟動已取消；請等下载完成（或連線後）再試。";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9110" = "啟動前校驗/補齊遊戲檔案（本機校驗，缺失才下載）";  // ★ [PREDL]
+"i18n_str_9111" = "缺少遊戲檔案";  // ★ [MISS] 影響遊玩的缺件（自動補下後仍缺）標題
+"i18n_str_9112" = "已自動補下，但仍有 %ld 個必要檔案缺失。可以「重試」，也可以「繼續啟動」（可能啟動失敗）。";  // ★ [MISS]
 "i18n_str_9104" = "%@ %@ 已建立（MC %@）。載入器函式庫未裝全，首次啟動時將自動補齊。\n%@";  // ★ [FABRIC-COMPLETE]
 "i18n_str_9105" = "仍在下載 / 驗證";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9106" = "還有 %ld 項正在下載或驗證。完成後將自動啟動遊戲（不會再報缺件）。";  // ★ [LAUNCH-AFTER-DL]

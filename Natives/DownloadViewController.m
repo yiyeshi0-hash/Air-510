@@ -5989,8 +5989,7 @@ static NSString *PLSha1FromPrimaryFile(NSDictionary *primaryFile) {
         NSDictionary *profiles = PLProfiles.current.profiles;
         NSDictionary *prof = profiles[instanceName];
         if ([prof isKindOfClass:[NSDictionary class]]) {
-            // ★ [VER-ISOLATE-PCL] 改用版本隔离统一解析：隔离开启时 mods 落在
-            //   versions/<版本 id>/mods，关闭时仍是 "."（实例根）——与改动前一致。
+            // gameDir 统一解析（版本隔离已删除 ⇒ 恒为 "."，显式自定义 gameDir 除外）。
             NSString *gameDir = amePCLVersionGameDirSubpath(prof, nil);
             if ([gameDir isKindOfClass:[NSString class]] && gameDir.length > 0 && ![gameDir isEqualToString:@"."]) {
                 // gameDir 是相对路径时，相对于 POJAV_GAME_DIR 解析

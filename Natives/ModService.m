@@ -209,7 +209,7 @@
         NSDictionary *profiles = PLProfiles.current.profiles;
         NSDictionary *prof = profiles[profile];
         if (![prof isKindOfClass:[NSDictionary class]]) return nil;
-        NSString *gameDir = amePCLVersionGameDirSubpath(prof, nil);   // ★ [VER-ISOLATE-PCL] 版本隔离统一解析
+        NSString *gameDir = amePCLVersionGameDirSubpath(prof, nil);   // gameDir 统一解析（版本隔离已删除）
         if (![gameDir isKindOfClass:[NSString class]] || gameDir.length == 0) return nil;
         if ([gameDir isEqualToString:@"."]) {
             // "." 表示主目录

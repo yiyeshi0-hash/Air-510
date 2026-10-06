@@ -35,6 +35,9 @@ extern void setPrefInt(NSString *key, NSInteger value);
 
 static void *ProgressObserverContext = &ProgressObserverContext;
 
+// ★ [MISS] 「影响游玩的缺件 ⇒ 自动补下」的有界次数：用尽后仍缺才告知玩家（重试 / 继续启动）。
+static const NSInteger kAMEMissingAutoRedownloadMax = 2;
+
 @interface LauncherRightPanelViewController () <UIDocumentPickerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate>
 
 // ★ [NORIGHT] 头像裁剪器的呈现宿主(容器 0×0 后改由"顶层可见 VC"代呈,关闭时要用同一个)
@@ -104,6 +107,17 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 /// 缺件时轮询等待（有界），不带着缺件进 JLI_Launch。
 @property(nonatomic, assign) NSInteger launchAdmissionRetryCount;
 
+// ★ [MISS] 启动期缺件处理（用户口径：不影响游玩的直接跳过；影响游玩的自动补下，失败才告知）：
+/// 本次要启动的版本对象：门禁发现「影响游玩的缺件」时用它走【同一条下载链路】补下
+/// （已存在且校验通过的会跳过 ⇒ 只补缺的那几个）。nil = 无版本对象可补下。
+@property(nonatomic, strong) NSDictionary *missingLaunchVersionObject;
+/// 自动补下次数（有界，见 kAMEMissingAutoRedownloadMax）
+@property(nonatomic, assign) NSInteger missingAutoRedownloadCount;
+/// 已就「补下后仍缺」提示过玩家（避免等待重试每 0.5s 都弹一次）
+@property(nonatomic, assign) BOOL missingFilesPrompted;
+/// 用户选择「继续启动」⇒ 绕过本地缺件门禁（★ [NO-BLOCK]：非渲染器门禁不得永久阻断启动）
+@property(nonatomic, assign) BOOL missingFilesForcedLaunch;
+
 @end
 
 @implementation LauncherRightPanelViewController
@@ -163,6 +177,12 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(applyCustomAppearance)
                                                  name:@"LauncherAppearanceChanged"
+                                               object:nil];
+
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重新按背景亮度取自适应前景色
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(applyCustomAppearance)
+                                                 name:AMEForegroundContrastChangedNotification
                                                object:nil];
 
     // 监听背景 UI 效果变化通知：当用户在背景设置中切换毛玻璃/半透明或调整透明度时，
@@ -242,7 +262,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.usernameLabel = [[UILabel alloc] init];
     self.usernameLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.usernameLabel.font = [UIFont boldSystemFontOfSize:16];
-    self.usernameLabel.textColor = [UIColor labelColor];
+    self.usernameLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.usernameLabel.textAlignment = NSTextAlignmentCenter;
     // iPhone 上侧栏宽度更窄，开启字号自适应避免长用户名被截断
     self.usernameLabel.adjustsFontSizeToFitWidth = YES;
@@ -255,7 +275,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.versionLabel = [[UILabel alloc] init];
     self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.versionLabel.font = [UIFont systemFontOfSize:13];
-    self.versionLabel.textColor = [UIColor secondaryLabelColor];
+    self.versionLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.versionLabel.textAlignment = NSTextAlignmentCenter;
     self.versionLabel.adjustsFontSizeToFitWidth = YES;
     self.versionLabel.minimumScaleFactor = 0.7;
@@ -270,7 +290,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.progressLabel = [[UILabel alloc] init];
     self.progressLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.progressLabel.font = [UIFont systemFontOfSize:12];
-    self.progressLabel.textColor = [UIColor secondaryLabelColor];
+    self.progressLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.progressLabel.textAlignment = NSTextAlignmentCenter;
     self.progressLabel.text = @"";
     self.progressLabel.hidden = YES;
@@ -293,7 +313,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.downloadCenterButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.downloadCenterButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.downloadCenterButton setTitle:localize(@"i18n_str_136", nil) forState:UIControlStateNormal];
-    [self.downloadCenterButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [self.downloadCenterButton setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
     self.downloadCenterButton.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
     self.downloadCenterButton.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.downloadCenterButton.titleLabel.minimumScaleFactor = 0.7;
@@ -388,7 +408,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.manageVersionBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.manageVersionBtn.translatesAutoresizingMaskIntoConstraints = NO;
     [self.manageVersionBtn setTitle:localize(@"i18n_str_38", nil) forState:UIControlStateNormal];
-    [self.manageVersionBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [self.manageVersionBtn setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
     [self.manageVersionBtn.titleLabel setFont:[UIFont systemFontOfSize:14 weight:UIFontWeightMedium]];
     self.manageVersionBtn.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.manageVersionBtn.titleLabel.minimumScaleFactor = 0.7;
@@ -403,7 +423,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     self.executeJarBtn = [UIButton buttonWithType:UIButtonTypeSystem];
     self.executeJarBtn.translatesAutoresizingMaskIntoConstraints = NO;
     [self.executeJarBtn setTitle:localize(@"i18n_str_414", nil) forState:UIControlStateNormal];
-    [self.executeJarBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [self.executeJarBtn setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
     self.executeJarBtn.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.executeJarBtn.titleLabel.minimumScaleFactor = 0.7;
     self.executeJarBtn.titleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -565,7 +585,7 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         self.launchButton.layer.shadowOpacity = 0.0;   // 去发光/投影
         // 字号降到 Subheadline 一档
         self.launchButton.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-        [self.launchButton setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        [self.launchButton setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
         // 左侧 ▶ 图标（play.fill），图标+文字居中
         UIImage *play = [UIImage systemImageNamed:@"play.fill"];
         if (play) {
@@ -947,11 +967,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         [self.executeJarBtn setTitleColor:customColor forState:UIControlStateNormal];
     } else {
         // 未设置自定义字体颜色时，恢复系统自适应颜色
-        self.usernameLabel.textColor = [UIColor labelColor];
-        self.versionLabel.textColor = [UIColor secondaryLabelColor];
-        self.progressLabel.textColor = [UIColor secondaryLabelColor];
-        [self.manageVersionBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
-        [self.executeJarBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+        self.usernameLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
+        self.versionLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
+        self.progressLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
+        [self.manageVersionBtn setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
+        [self.executeJarBtn setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
         // JIT 状态颜色由 updateJITStatus 单独管理，不在此重置
     }
 }
@@ -998,17 +1018,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     for (NSString *profileName in sortedNames) {
         NSDictionary *profile = profiles[profileName];
         NSString *versionId = profile[@"lastVersionId"] ?: @"";
-        // ★ [VER-ISOLATE-PCL] 检测是否启用版本隔离（统一解析：显式值/自动判定/全局默认）
-        BOOL isolated = amePCLVersionIsolationForProfile(profile, nil);
+        // ★ [NO-VI] 版本隔离状态标记已随功能删除。
         NSMutableString *title = [NSMutableString string];
         if ([profileName isEqualToString:currentSelected]) {
             [title appendString:@"✓ "];
         }
         [title appendString:profileName];
         [title appendFormat:@"  (%@)", versionId];
-        if (isolated) {
-            [title appendString:[@"  · " stringByAppendingString:localize(@"i18n_str_2026", nil)]];
-        }
         [alert addAction:[UIAlertAction actionWithTitle:title
                                                   style:UIAlertActionStyleDefault
                                                 handler:^(UIAlertAction * _Nonnull action) {
@@ -1150,6 +1166,11 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 }
 
 - (void)launchButtonTapped {
+    // ★ [MISS] 新一轮用户启动 ⇒ 重置缺件门禁状态（自动补下次数 / 已提示 / 强制放行）
+    self.missingAutoRedownloadCount = 0;
+    self.missingFilesPrompted = NO;
+    self.missingFilesForcedLaunch = NO;
+
     // 恢复按压动画（TouchUpInside 不触发 launchButtonTouchUp）
     [UIView animateWithDuration:0.1
                           delay:0
@@ -1383,6 +1404,10 @@ static void *ProgressObserverContext = &ProgressObserverContext;
 
 - (void)startDownloadWithVersion:(NSDictionary *)versionObject profileName:(NSString *)profileName {
     self.task = [MinecraftResourceDownloadTask new];
+    // ★ [MISS] 记住本次启动的版本对象：缺件门禁失败时要走【同一条下载链路】补下（只补缺的）。
+    if ([versionObject isKindOfClass:[NSDictionary class]]) {
+        self.missingLaunchVersionObject = versionObject;
+    }
 
     // ★ [PREDL] 启动前【可见】的检查/补齐步骤（保留，不静默）：
     //   点「启动」后先对实例做完整性校验（本地 SHA1；仅缺失/损坏才联网补齐）。
@@ -1576,10 +1601,25 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     });
 }
 
-// ★ [LAUNCH-AFTER-DL] 启动准入：本地核对必需文件（不联网），齐备才放行进 JLI_Launch。
-//   缺件时不启动，给明确提示并按有界重试延迟等待（最多 600 × 0.5s = 300s），
-//   超时则放弃本次启动并提示（绝不带着缺件启动），用户可在下载结束后重试。
+// ★ [LAUNCH-AFTER-DL][MISS] 启动准入：本地核对必需文件（不联网），齐备才放行进 JLI_Launch。
+//   ★ 本函数就是「缺件」的用户口径落点：
+//     ① 不影响游玩 / 本平台不适用的缺件 ⇒ 在 missingRequiredLaunchFilesForMetadata: 里
+//        直接跳过并写一行 `[MISS] skip=… reason=…`，不弹窗、不等待（下载器同样永不下它）；
+//     ② 影响游玩的缺件 ⇒ 【自动补下】（同一条 downloadVersion: 链路、带进度；只补缺的），
+//        有界 kAMEMissingAutoRedownloadMax 次 —— 这就是「提示缺件却不去下」的修法；
+//     ③ 补下后仍缺 ⇒ 此刻才告知玩家，并给「重试 / 继续启动」两条出路（★ [NO-BLOCK]）。
 - (void)scheduleLaunchAfterLocalAdmissionCheckWithMetadata:(NSDictionary *)metadata {
+    // ★ [NO-BLOCK] 用户已选「继续启动」⇒ 不再等待/补下，直接放行（非渲染器门禁不得永久阻断启动）
+    if (self.missingFilesForcedLaunch) {
+        self.missingFilesForcedLaunch = NO;
+        self.launchAdmissionRetryCount = 0;
+        AmeLaunchGateNoteNonBlock(@"missing_files_user_forced_launch", AmeLaunchGateKindFiles);
+        [self invokeAfterJITEnabled:^{
+            UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
+        }];
+        return;
+    }
+
     NSArray<NSString *> *missing = [self missingRequiredLaunchFilesForMetadata:metadata];
     if (missing.count == 0) {
         if (self.launchAdmissionRetryCount > 0) {
@@ -1589,22 +1629,46 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             NSLog(@"[LAUNCH-AFTER-DL] 本地核对通过 ⇒ 放行启动");
         }
         self.launchAdmissionRetryCount = 0;
+        self.missingAutoRedownloadCount = 0;
+        self.missingFilesPrompted = NO;
         [self invokeAfterJITEnabled:^{
             UIKit_launchMinecraftSurfaceVC(self.view.window, metadata);
         }];
         return;
     }
 
+    NSUInteger showCount = MIN((NSUInteger)5, missing.count);
+    NSString *sample = [[missing subarrayWithRange:NSMakeRange(0, showCount)] componentsJoinedByString:@", "];
+
+    // ② 影响游玩的缺件 ⇒ 自动补下（而不是只弹窗干等）。
+    //    与安装/启动期完全相同的 downloadVersion: 链路（统一进度页自动弹出；
+    //    已存在且 SHA1 通过的会跳过 ⇒ 实际只重下缺失/损坏的那几个）。
+    if (self.missingAutoRedownloadCount < kAMEMissingAutoRedownloadMax &&
+        [self.missingLaunchVersionObject isKindOfClass:[NSDictionary class]]) {
+        self.missingAutoRedownloadCount += 1;
+        NSLog(@"[MISS] required=%lu ⇒ 自动补下（第 %ld/%ld 次）；样例：%@",
+              (unsigned long)missing.count, (long)self.missingAutoRedownloadCount,
+              (long)kAMEMissingAutoRedownloadMax, sample);
+        [self startDownloadWithVersion:self.missingLaunchVersionObject
+                            profileName:PLProfiles.current.selectedProfileName];
+        return;
+    }
+
+    // ③ 补下用尽（或无版本对象可补）仍缺 ⇒ 只在此刻告知玩家，给「重试 / 继续启动」两条出路。
+    if (!self.missingFilesPrompted) {
+        self.missingFilesPrompted = YES;
+        NSLog(@"[MISS] required=%lu 仍缺（自动补下 %ld 次后）⇒ 提示玩家（重试 / 继续启动）；样例：%@",
+              (unsigned long)missing.count, (long)self.missingAutoRedownloadCount, sample);
+        [self presentMissingRequiredFilesAlertWithCount:missing.count metadata:metadata sample:sample];
+        return;
+    }
+
+    // 已提示过（下载可能仍在进行）⇒ 有界等待：最多 600 × 0.5s = 300s，
+    // 超时即放弃本次启动（绝不带着缺件启动），用户可在下载结束后重试。
     self.launchAdmissionRetryCount += 1;
     NSInteger retry = self.launchAdmissionRetryCount;
     NSLog(@"[LAUNCH-AFTER-DL] 启动准入未通过：仍缺 %lu 项（第 %ld 次等待重试）；样例：%@",
-          (unsigned long)missing.count, (long)retry,
-          [[missing subarrayWithRange:NSMakeRange(0, MIN((NSUInteger)5, missing.count))] componentsJoinedByString:@", "]);
-
-    if (retry == 1) {
-        [self showAlert:localize(@"i18n_str_9105", nil)
-                message:[NSString stringWithFormat:localize(@"i18n_str_9108", nil), (long)missing.count]];
-    }
+          (unsigned long)missing.count, (long)retry, sample);
     if (retry > 600) {
         NSLog(@"[LAUNCH-AFTER-DL] 启动准入等待超时（仍缺 %lu 项）⇒ 放弃本次启动（不带着缺件启动）",
               (unsigned long)missing.count);
@@ -1626,9 +1690,63 @@ static void *ProgressObserverContext = &ProgressObserverContext;
     });
 }
 
-/// ★ [LAUNCH-AFTER-DL] 本地核对启动必需文件（不联网）：
-///   ① 版本 JSON 自身；② 每个非 skip 库（含 tweakVersionJson 追加的 client.jar 伪库
-///   path=../versions/<id>/<id>.jar）；③ assetIndex JSON。返回缺失清单（空 = 齐备）。
+// ★ [MISS] 「影响游玩的缺件 → 自动补下后仍缺」才提示玩家：
+//   给「重试」（再走一轮自动补下）/「继续启动」（★ [NO-BLOCK] 强行放行，缺件后果由用户自担）
+//   /「取消」（留在启动器，恢复交互）三条出路。
+- (void)presentMissingRequiredFilesAlertWithCount:(NSInteger)count
+                                        metadata:(NSDictionary *)metadata
+                                          sample:(NSString *)sample {
+    NSString *title = localize(@"i18n_str_9111", nil);
+    NSString *message = [NSString stringWithFormat:localize(@"i18n_str_9112", nil), (long)count];
+    if (sample.length > 0) {
+        message = [message stringByAppendingFormat:@"\n%@", sample];
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                  message:message
+                                                           preferredStyle:UIAlertControllerStyleAlert];
+    __weak typeof(self) weakSelf = self;
+    if ([self.missingLaunchVersionObject isKindOfClass:[NSDictionary class]]) {
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_21", nil)   // 重试
+                                                 style:UIAlertActionStyleDefault
+                                               handler:^(UIAlertAction *action) {
+            __strong typeof(weakSelf) s = weakSelf;
+            if (!s) return;
+            s.missingAutoRedownloadCount = 0;
+            s.missingFilesPrompted = NO;
+            NSLog(@"[MISS] 用户选择「重试」⇒ 再走一轮自动补下");
+            [s startDownloadWithVersion:s.missingLaunchVersionObject
+                            profileName:PLProfiles.current.selectedProfileName];
+        }]];
+    }
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_592", nil)      // 立即启动
+                                             style:UIAlertActionStyleDefault
+                                           handler:^(UIAlertAction *action) {
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        NSLog(@"[MISS] 用户选择「继续启动」⇒ 绕过本地缺件门禁（NO-BLOCK）");
+        s.missingFilesForcedLaunch = YES;
+        [s scheduleLaunchAfterLocalAdmissionCheckWithMetadata:metadata];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
+                                             style:UIAlertActionStyleCancel
+                                           handler:^(UIAlertAction *action) {
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        NSLog(@"[MISS] 用户取消本次启动（留在启动器）");
+        s.task = nil;
+        AmeGameLandscapeLockExit();   // ★ [GAME-LANDSCAPE] 取消启动 ⇒ 恢复启动器方向
+        [s setInteractionEnabled:YES];
+    }]];
+    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];
+}
+
+/// ★ [LAUNCH-AFTER-DL][MISS] 本地核对【影响游玩】的启动必需文件（不联网）。判据与下载器共用唯一真源：
+///   ① 版本 JSON 自身；② 每个「下载器真的会下」的库（含 tweakVersionJson 追加的 client.jar
+///   伪库 path=../versions/<id>/<id>.jar）；③ assetIndex JSON；④ 资源对象抽样。
+///   ★ 下载器【永不下载】的对象（skip / OS rules 不适用 / 无 URL / 非标准 Maven 名 /
+///   minecraft.icns）一律记一行 `[MISS] skip=… reason=…` 后【跳过】，不计入缺件 ——
+///   否则就是用户报的「每次启动都提示缺件、却永远下不来」（假缺件拦启动）。
+///   返回 = 影响游玩的缺件清单（空 = 齐备）。
 - (NSArray<NSString *> *)missingRequiredLaunchFilesForMetadata:(NSDictionary *)metadata {
     NSMutableArray<NSString *> *missing = [NSMutableArray array];
     if (![metadata isKindOfClass:[NSDictionary class]]) return missing;
@@ -1648,12 +1766,19 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         }
     }
 
-    // ② 库（含 client.jar 伪库）
+    // ② 库（含 client.jar 伪库）—— ★ 与下载器同一个「会不会下 / 下到哪」判据（唯一真源）
     NSArray *libs = [metadata[@"libraries"] isKindOfClass:[NSArray class]] ? metadata[@"libraries"] : @[];
     for (NSDictionary *lib in libs) {
         if (![lib isKindOfClass:[NSDictionary class]]) continue;
-        if ([lib[@"skip"] boolValue]) continue;   // lwjgl/natives 等已在启动器侧替换/跳过
-        NSString *p = lib[@"downloads"][@"artifact"][@"path"];
+        NSDictionary *artifact = [MinecraftResourceUtils resolvedLibraryArtifactForLaunch:lib];
+        if (artifact == nil) {
+            // 下载器不会下载这个库（skip / OS rules 不适用 / 无法生成 artifact）
+            // ⇒ 不算缺件，直接跳过并留一行可检索日志。
+            NSString *ln = [lib[@"name"] isKindOfClass:[NSString class]] ? lib[@"name"] : @"?";
+            NSLog(@"[MISS] skip=%@ reason=not_applicable(skip/rules/no-artifact)", ln);
+            continue;
+        }
+        NSString *p = artifact[@"path"];
         if (![p isKindOfClass:[NSString class]] || p.length == 0) continue;
         NSString *abs = [p hasPrefix:@"../"]
             ? [[gameDir stringByAppendingPathComponent:p] stringByStandardizingPath]
@@ -1663,6 +1788,13 @@ static void *ProgressObserverContext = &ProgressObserverContext;
             size = [[fm attributesOfItemAtPath:abs error:nil] fileSize];
         }
         if (size == 0) {
+            // 连「从哪下」都没有（artifact 无 URL）⇒ 下载器也拿不回来：判为源/平台不适用，
+            // 不当作「影响游玩的缺件」（避免永远等一个下不到的文件）。
+            id u = artifact[@"url"];
+            if (![u isKindOfClass:[NSString class]] || [(NSString *)u length] == 0) {
+                NSLog(@"[MISS] skip=%@ reason=not_applicable(no_url)", p);
+                continue;
+            }
             [missing addObject:[p lastPathComponent] ?: p];
         }
     }
@@ -1674,7 +1806,14 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         assetIndexPath = [gameDir stringByAppendingPathComponent:
                           [NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
         if (![fm fileExistsAtPath:assetIndexPath]) {
-            [missing addObject:[NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
+            id aiUrl = ai[@"url"];
+            if (![aiUrl isKindOfClass:[NSString class]] || [(NSString *)aiUrl length] == 0) {
+                // 无 URL ⇒ 下载器也取不回来：判为不适用，不算缺件
+                NSLog(@"[MISS] skip=assets/indexes/%@.json reason=not_applicable(no_url)", ai[@"id"]);
+                assetIndexPath = nil;
+            } else {
+                [missing addObject:[NSString stringWithFormat:@"assets/indexes/%@.json", ai[@"id"]]];
+            }
         }
     }
 
@@ -1686,21 +1825,33 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         BOOL mapToResources = [indexObj[@"map_to_resources"] boolValue];
         if (objects.count > 0) {
             NSUInteger checked = 0, missingAssets = 0;
+            NSMutableArray<NSString *> *missingAssetSamples = [NSMutableArray array];
             for (NSString *name in objects) {
                 if (checked >= 100) break;
-                checked++;
+                // ★ [MISS][ASSET-LIST] 与下载器同款排除：本平台永不下载的对象不算缺件
+                if ([MinecraftResourceUtils assetObjectExcludedOnThisPlatform:name]) {
+                    NSLog(@"[MISS] skip=%@ reason=not_applicable(asset-excluded)", name);
+                    continue;
+                }
                 NSDictionary *o = objects[name];
                 NSString *hash = [o isKindOfClass:[NSDictionary class]] ? o[@"hash"] : nil;
                 if (![hash isKindOfClass:[NSString class]] || hash.length < 2) continue;
+                checked++;
                 NSString *op = mapToResources
                     ? [gameDir stringByAppendingPathComponent:[@"resources" stringByAppendingPathComponent:name]]
                     : [gameDir stringByAppendingPathComponent:
                        [NSString stringWithFormat:@"assets/objects/%@/%@", [hash substringToIndex:2], hash]];
-                if (![fm fileExistsAtPath:op]) missingAssets++;
+                if (![fm fileExistsAtPath:op]) {
+                    missingAssets++;
+                    // ★ [MISS] 记下前几个缺失对象名 ⇒ 日志/弹窗能一眼指出「到底缺哪一个」
+                    //（26.2 原版实例点名的那个假缺件就是 icons/minecraft.icns，见 _MISSING_FILES.md）
+                    if (missingAssetSamples.count < 3) [missingAssetSamples addObject:name];
+                }
             }
             if (missingAssets > 0) {
-                [missing addObject:[NSString stringWithFormat:@"assets(抽样 %lu/%lu)",
-                                    (unsigned long)missingAssets, (unsigned long)checked]];
+                [missing addObject:[NSString stringWithFormat:@"assets(抽样 %lu/%lu: %@)",
+                                    (unsigned long)missingAssets, (unsigned long)checked,
+                                    [missingAssetSamples componentsJoinedByString:@", "]]];
             }
         }
     }
@@ -2032,13 +2183,8 @@ static void *ProgressObserverContext = &ProgressObserverContext;
         NSDictionary *profile = PLProfiles.current.profiles[selectedProfile];
         if (profile) {
             NSString *versionId = profile[@"lastVersionId"] ?: @"unknown";
-            // ★ [VER-ISOLATE-PCL] 显示版本隔离状态（统一解析：显式值/自动判定/全局默认）
-            BOOL isolated = amePCLVersionIsolationForProfile(profile, nil);
-            if (isolated) {
-                self.versionLabel.text = [NSString stringWithFormat:localize(@"i18n_str_440", nil), versionId];
-            } else {
-                self.versionLabel.text = versionId;
-            }
+            // ★ [NO-VI] 版本隔离状态标记已随功能删除：版本号原样显示。
+            self.versionLabel.text = versionId;
         }
     } else {
         self.versionLabel.text = localize(@"i18n_str_411", nil);

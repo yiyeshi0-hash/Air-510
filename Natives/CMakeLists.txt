@@ -473,6 +473,8 @@ add_executable(AngelAuraAmethyst
   LanPortDetector.m
   # ★ [PORT-AUTO] MC 局域网端口自动探测（读游戏日志，供陶瓦联机「创建房间」自动填入）
   McLanPortDetector.m
+  # ★ [MP-PORT] MC 局域网端口探测 v2（宽松解析 + 增量轮询 + 只认当前会话 + 版本隔离子路径）
+  MpPortDetector.m
   ZeroTierBridge.m
   SOCKS5Proxy.m
   PortForwarder.m
@@ -515,16 +517,9 @@ add_executable(AngelAuraAmethyst
   input_bridge_v3.m
   ios_uikit_bridge.m
   utils.m
-  # ★ [VER-ISOLATE-MIGRATE] 版本隔离「数据迁移」引擎（逐实例、复制式、幂等可回滚、
-  #   不静默覆盖；默认不自动搬）。纯 Foundation，可脱壳单测。
-  VersionDataMigration.m
-  # ★ [VI-MIGRATE-AUTO] 版本隔离「自动识别迁移」引擎（选文件夹→按版本+加载器识别归属→
-  #   分组确认→复用上面的引擎复制）。纯 Foundation（自带 zip inflate + gzip/NBT）。
-  VersionDataMigrationAuto.m
-  # ★ [VI-MIGRATE-AUTO] 自动识别迁移 UI（分组勾选 + 改归属；沿用既有列表样式）
-  VersionAutoMigrateViewController.m
-  # ★ [VI-POLISH] 版本隔离「首启向导」UI（列实例 + 嗅探结果 + 建议三态 ⇒ 一键批量只写设置）
-  VersionIsolationWizardViewController.m
+  # ★ [NO-VI] 版本隔离功能已整体移除：原 VersionDataMigration(.m/.h) /
+  #   VersionDataMigrationAuto(.m/.h) / VersionAutoMigrateViewController(.m/.h) /
+  #   VersionIsolationWizardViewController(.m/.h) 源文件与编译条目一并删除。
   # ★ [LAUNCH-PROGRESS] 启动阶段上报 API(供 JavaLauncher / SurfaceViewController 调用)
   AmeLaunchProgress.m
 

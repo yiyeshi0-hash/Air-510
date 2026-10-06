@@ -1731,6 +1731,7 @@
 "i18n_str_2068" = "Me";
 "i18n_str_2069" = "Guest";
 "i18n_str_2070" = "Auto-detected LAN port %@";
+"i18n_str_2071" = "LAN world closed — the detected port is no longer valid. Please open to LAN again.";
 "i18n_str_1029" = "Not online";
 "i18n_str_1031" = "Joining room...";
 "i18n_str_1033" = "Online play error";
@@ -2152,6 +2153,11 @@
 "preference.title.glass_handdrawn" = "Hand-drawn Highlight";
 "preference.style.footer.pure" = "System materials only (default): the material is provided entirely by the system (Liquid Glass on iOS 26+) — no hand-drawn glass is added.";
 "preference.style.footer.handdrawn" = "Hand-drawn highlight is on: an extra rim/inner highlight is drawn on top of the system glass (optional).";
+"preference.title.foreground_mode" = "Text Color";
+"preference.fg.auto" = "Auto";
+"preference.fg.dark" = "Dark";
+"preference.fg.light" = "Light";
+"preference.fg.footer" = "Color of labels over a custom background. Auto picks dark or light text from the background brightness.";
 
 // ★ [LANG-SWITCH] launcher language switch (follow system + auto-enumerated .lproj)
 "preference.title.launcher_language" = "Language";
@@ -2252,5 +2258,7 @@
 "i18n_str_9108" = "Launch deferred: %ld required file(s) are still missing locally. Waiting for download/verification to finish…";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9109" = "Timed out: %ld required file(s) are still missing. The launch was cancelled to avoid a missing-file error. Let the download finish (or go online) and try again.";  // ★ [LAUNCH-AFTER-DL]
 "i18n_str_9110" = "Checking / fetching game files before launch (local check; downloads only what's missing)";  // ★ [PREDL]
+"i18n_str_9111" = "Missing game files";  // ★ [MISS] required files still missing after auto re-download (title)
+"i18n_str_9112" = "Auto re-download finished, but %ld required file(s) are still missing. You can retry, or continue launching anyway (the game may fail to start).";  // ★ [MISS]
 /* ★ [JIT-STATUS] JIT 权限已给但不保证可用（执行式探针未过）——琥珀三态，绝不假绿 */
 "ame_jit_status_perm_only" = "JIT: Granted (unverified)";

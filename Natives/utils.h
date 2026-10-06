@@ -684,94 +684,18 @@ NSString *ameVILatestLogRotatedPath(void);      // 每实例 latestlog.old.txt
 BOOL ameVIPathIsSymlink(NSString *path);                     // 不跟随 symlink 的判定
 BOOL ameVIHardLinkLog(NSString *srcPath, NSString *dstPath); // 建硬链接；成功=dest 为普通文件
 
-// ★ [VER-ISOLATE-PCL] ========================================================
-// 版本隔离（对齐 PCL2 社区版 PCL-CE 的「实例隔离」语义，源码键
-// VersionArgumentIndieV2 / LaunchArgumentIndieV2）。
-//
-// 语义（与 PCL 一致，纯目录指针切换，**不搬运文件**）：
-//   开启 → 该版本的 gameDir = <实例根>/versions/<版本 id>/   （mods/config/saves/
-//          resourcepacks/shaderpacks/logs/options.txt 全部落在此，与其它版本互不干涉）
-//   关闭 → 该版本的 gameDir = <实例根>/                      （与实例内其它版本共享，现状）
-// versions/ 目录本身、libraries/、assets/ 始终按实例共享 —— 与 PCL 相同：
-//   只有"游戏数据目录"被隔离，不是把整棵树复制一份。
-//
-// 判定顺序（对应 PCL McInstance.PathIndie / ShouldBeIndie）：
-//   1) profile 显式值 versionIsolation（"1"/"0"）——对应 PCL 的 VersionArgumentIndieV2
-//   2) 自动判定：<实例根>/versions/<id>/ 下已有 mods(含文件) 或 saves(含目录) ⇒ 开启
-//   3) 全局默认 general.version_isolation ——对应 PCL 的「默认实例隔离」LaunchArgumentIndieV2
-//
-// 解析给定 profile 的版本隔离是否开启。concreteVersionId 可为 nil（启动期可传
-// launchTarget[@“id”] 以拿到比 lastVersionId 更准确的版本 id）。
-BOOL amePCLVersionIsolationForProfile(NSDictionary *prof, NSString *concreteVersionId);
-
-// 生效的 gameDir 子路径（相对当前实例根）：@“.”（共享）或 @“versions/<id>”（隔离）。
-// profile 里显式写了非 @“.” 的 gameDir 时以显式值为准（保持既有语义不变）。
+// ★ [VER-ISOLATE-PCL → NO-VI] ================================================
+// 版本隔离（对齐 PCL2-CE 的「实例隔离」语义，源码键 VersionArgumentIndieV2 /
+// LaunchArgumentIndieV2）功能已【整体移除】：首启向导、实例设置里的三态开关、
+// 整合包默认写 versionIsolation、开隔离后的迁移询问与迁移 UI/引擎、一次性迁移，
+// 全部删除。这里仅保留 gameDir 解析 API —— 行为恒等于「隔离关闭」（共享）：
+//   · profile 显式写了非 @“.” 的 gameDir ⇒ 以显式值为准（既有"自定义游戏目录"语义）；
+//   · 否则 ⇒ @“.”（实例共享根，= POJAV_GAME_DIR）。
+// 历史数据里残留的 versionIsolation 键一律【被忽略】，不再影响游戏目录。
 NSString *amePCLVersionGameDirSubpath(NSDictionary *prof, NSString *concreteVersionId);
 
 // 生效的 gameDir 绝对路径（POJAV_GAME_DIR + 上面的子路径）。
 NSString *amePCLVersionGameDirAbsolute(NSDictionary *prof, NSString *concreteVersionId);
-
-// 一次性幂等迁移（哨兵键 internal.version_isolation_migrated）：
-// 把"升级前已手工隔离过"的 profile（gameDir 指向 versions/*，或对应版本目录下
-// 已有 mods/saves）显式写成 versionIsolation=@"1"，使其在设置页可见、可回退。
-void amePCLMigrateVersionIsolationOnce(void);
-
-// ★ [VER-ISOLATE-MIGRATE] ====================================================
-// 实例【共享游戏根】绝对路径（= POJAV_GAME_DIR；不可得时回退 ameVIInstanceRoot()）。
-// 仅作 fallback；带 profile 的迁移请用下面的 amePCLSharedGameDirForProfile。
-// 注意：本函数【只解析路径，绝不移动/复制任何文件】。
-NSString *amePCLSharedGameDirAbsolute(void);
-
-// ★ [VER-ISOLATE-MIGRATE] 某 profile 在【关闭隔离】时实际使用的 gameDir 绝对路径
-// （= 迁移的"源根" = 用户当前真正在用的那个目录）。**唯一真相源 = 同一 resolver**：
-// 本函数不另拼路径，而是把 profile 的 versionIsolation 显式置 "0" 后交给
-// amePCLVersionGameDirAbsolute 解析（显式 versionIsolation 会让 resolver 立即返回，
-// 不再走自动启发式）。profile 若写了显式自定义 gameDir，则会解析成该目录 ⇒ 与
-// amePCLVersionGameDirAbsolute(profile,...)（开隔离）同值 ⇒ 迁移自动判定为"无目标"。
-// 迁移动作用户在实例编辑页显式触发；本函数自身不动任何文件。
-NSString *amePCLSharedGameDirForProfile(NSDictionary *prof, NSString *concreteVersionId);
-
-// ★ [VI-POLISH] ==============================================================
-// 采纳《_LAUNCHER_ISOLATION_SURVEY.md》§③ 建议 A/B/C/D 的共用底座：
-//   A 三态可见化 —— 隔离显式三态读写 + 目录形状嗅探明细（供 UI 说明「为什么是这个判定」）
-//   B 首启向导   —— ★ [VI-FLOW] 用户修正：每次进启动器都再弹，直到用户主动选「以后不再提示」
-// （C 共享边界文案 / D 关闭恢复提示 是纯文案，落在 .strings 与各页 UI，不在这里。）
-// 硬约束：本段所有函数只【读磁盘 + 读/写设置】，绝不移动、复制或删除任何文件；
-//         「自动」= 不落键，保持 resolver 既有默认语义（默认仍关，未改任何默认值）。
-
-// A. 隔离显式三态 —— 对应 profile 的 versionIsolation 键，与 resolver 第 1 步完全同源：
-//    Auto     = 未落键（resolver 走 自动判定 → 全局默认 general.version_isolation）
-//    Shared   = 显式 "0"（PCL 的 VersionArgumentIndieV2=0）
-//    Isolated = 显式 "1"（PCL 的 VersionArgumentIndieV2=1）
-typedef NS_ENUM(NSInteger, AmeVIExplicitState) {
-    AmeVIExplicitStateAuto     = -1,
-    AmeVIExplicitStateShared   =  0,
-    AmeVIExplicitStateIsolated =  1,
-};
-
-// 读 profile 的显式三态（未落键 ⇒ Auto）。
-AmeVIExplicitState ameVIExplicitStateForProfile(NSDictionary *prof);
-
-// 写 profile 的显式三态：Auto ⇒ 移除该键（回到自动判定），Isolated/Shared ⇒ 写 "1"/"0"。
-// 只改这一个键，不动任何文件、不动 profile 的其它字段。
-void ameVISetExplicitStateForProfile(NSMutableDictionary *prof, AmeVIExplicitState state);
-
-// A. 版本目录形状嗅探明细（纯只读）。判定规则与 resolver 的自动判定**逐字同源**
-//    （mods：含非隐藏文件；saves：含非隐藏条目 ⇒ 视为已隔离）。
-// 返回 @{ @"hasMods": @BOOL, @"hasSaves": @BOOL, @"hasAny": @BOOL,
-//          @"exists": @BOOL, @"path": NSString }（任何一步不可得都返回全 NO，绝不抛错）。
-NSDictionary *ameVISniffVersionFolder(NSString *versionId);
-
-// A. 向导用「建议隔离态」：嗅探到内容 ⇒ 建议显式隔离；否则建议保持自动（默认）。只读，不落键。
-BOOL ameVISniffShouldSuggestIsolation(NSString *versionId);
-
-// ★ [VI-FLOW] B（用户修正 1 + 补充）：向导「弹到用户主动说『以后都不弹』为止」。
-//    * 哨兵 internal.version_isolation_wizard_off：幂等，【只】在用户于点「以后不再提示」时写一次；
-//      弹出时绝不写。未落哨兵 ⇒ 每次进启动器都会再次出现（可跳过、不阻碍启动）。
-//    * 已落哨兵 ⇒ 不再【自动】弹；但实例设置页的「版本隔离向导」手动入口直接 present（不受哨兵约束）。
-//    静态证明：哨兵读点唯一（ShouldPresent，只读不写）、写点唯一（MarkDontShowAgain，仅向导按钮调用）。
-BOOL ameVIWizardShouldPresent(void);
-void ameVIWizardMarkDontShowAgain(void);
 
 // ★ [NO-BLOCK] 启动门禁统一判定 ==============================================
 // 目的：从「点启动」到「进游戏」的链路上，只有【渲染器类】的选择/初始化允许阻断；

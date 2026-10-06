@@ -11,7 +11,6 @@
 // ★ [MP-RESTORE] Terracotta 联机恢复
 #import "TerracottaManager.h"
 #import "TerracottaBridge.h"
-#import "VersionIsolationWizardViewController.h"   // ★ [VI-POLISH] 版本隔离首启向导（只写设置）
 
 extern UIWindow *mainWindow;
 
@@ -98,13 +97,6 @@ extern UIWindow *mainWindow;
     // 延后一拍执行，等 rootViewController 完成首轮布局后再 present。
     dispatch_async(dispatch_get_main_queue(), ^{
         [UpdateChecker performStartupCheckFromPresenter:self.window.rootViewController];
-    });
-
-    // ★ [VI-FLOW] B：版本隔离向导 —— 每次进启动器都会再弹，直到用户主动选「以后不再提示」
-    //   （哨兵 internal.version_isolation_wizard_off 只在用户点该按钮时写；弹出时【不】写哨兵）。
-    //   延后一拍 + 可跳过 ⇒ 绝不阻碍启动；用户随时可从实例设置页的「版本隔离向导」入口重新打开。
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self amePresentVersionIsolationWizardIfNeeded];
     });
 
     // ★ [MP-RESTORE] 联机恢复 —— lazy init：启动路径上**不**创建 TerracottaManager /
@@ -247,38 +239,10 @@ extern UIWindow *mainWindow;
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - ★ [VI-FLOW] B. 版本隔离向导（每次进启动器再弹，直到用户选「以后不再提示」）
+#pragma mark - ★ [NO-VI] 版本隔离向导已移除
 
-// ★ [VI-FLOW]（用户修正 1 + 补充）：需求是「弹到用户主动说『以后都不弹』为止」，因此：
-//   ① 入口只【读】哨兵（ameVIWizardShouldPresent）：未落 ⇒ YES（该弹，本次进入都会出现）；
-//      已落 ⇒ NO（用户已选「以后不再提示」）。
-//   ② 弹出【不写】哨兵 —— 哨兵只由向导页里的「以后不再提示」按钮写（写点唯一）。
-//      ⇒ 用户「跳过」/ 本次关闭 ≠ 以后不弹，下次进启动器仍会再出现。
-//   ③ 手动重开：实例设置页「版本隔离向导」入口直接走 amePresentVersionIsolationWizard，
-//      不经过本哨兵 ⇒ 哨兵落了也能随时再看。
-// 可跳过：向导页自带「跳过」按钮，什么都不写。
-// 不阻碍启动：以下在 dispatch_async(主队列) 里跑，启动路径不等它。
-// 呈现兜底：若已有模态（更新提示 / 翻译提示）就挂到最顶层模态上，避免 present 失败。
-- (void)amePresentVersionIsolationWizardIfNeeded {
-    if (!ameVIWizardShouldPresent()) return;   // ★ [VI-FLOW] 用户已选「以后不再提示」⇒ 不自动弹
-    [self amePresentVersionIsolationWizard];
-}
-
-// 实际弹出向导（自动入口与手动入口共用；本身不读/写哨兵）。
-- (void)amePresentVersionIsolationWizard {
-    UIViewController *presenter = self.window.rootViewController;
-    while (presenter.presentedViewController) presenter = presenter.presentedViewController;
-    if (!presenter) {
-        NSLog(@"★ [VI-FLOW] 向导：无可用 presenter，本次跳过");
-        return;
-    }
-
-    VersionIsolationWizardViewController *vc = [[VersionIsolationWizardViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    [presenter presentViewController:nav animated:YES completion:nil];
-    NSLog(@"★ [VI-FLOW] 向导已弹出（只写设置、不搬文件；可跳过；可选「以后不再提示」）");
-}
+// ★ [NO-VI] amePresentVersionIsolationWizardIfNeeded / amePresentVersionIsolationWizard
+//   两个向导呈现方法已随「版本隔离」功能整体删除（首启不再弹任何向导）。
 
 - (void)applyUITheme:(NSNotification *)notification {
     // 实时切换外观模式。仅修改 window.overrideUserInterfaceStyle，

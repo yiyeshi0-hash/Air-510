@@ -1618,6 +1618,7 @@
 "i18n_str_2068" = "我";
 "i18n_str_2069" = "房客";
 "i18n_str_2070" = "已自动检测到局域网端口 %@";
+"i18n_str_2071" = "LANワールドが閉じられました。検出したポートは無効です。もう一度「LANに公開」してください。";
 "i18n_str_1029" = "未联机";
 "i18n_str_1031" = "加入房间中…";
 "i18n_str_1033" = "联机出错";
@@ -2032,6 +2033,11 @@
 "jit.wait.jitstreamer" = "Enable JIT for this app through JitStreamer, then return to the launcher. Waiting up to 30 seconds…";
 "jit.timeout_retry_msg" = "Your JIT tool may have reported \"complete\", but the launcher's own self-check failed (no writable JIT region — being attached is not the same as working). Tap Retry, or restart the app / use TrollStore and retry.";
 "preference.style.footer.handdrawn" = "Hand-drawn highlight is on: an extra rim/inner highlight is drawn on top of the system glass (optional).";
+"preference.title.foreground_mode" = "Text Color";
+"preference.fg.auto" = "Auto";
+"preference.fg.dark" = "Dark";
+"preference.fg.light" = "Light";
+"preference.fg.footer" = "Color of labels over a custom background. Auto picks dark or light text from the background brightness.";
 "preference.title.renderer.release.mg" = "MobileGlues";
 "i18n_str_9102" = "Large";
 "preference.title.glass_handdrawn" = "Hand-drawn Highlight";

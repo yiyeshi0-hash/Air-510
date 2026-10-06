@@ -95,6 +95,10 @@ static const CGFloat kE1MinCardWidth       = 190.0;  // ★ [UI-ADAPT] 单卡最
 
 /// 是否按"深色令牌"取色。un-specified 也按深色 —— 与启动器默认紫蓝背景(深)保持一致。
 static BOOL E1UsesDarkTokens(UITraitCollection *tc) {
+    // ★ [BG-CONTRAST] 有自定义背景 ⇒ 按背景【代表亮度】取深/浅令牌(浅背景用深字,暗背景用白字);
+    //   无自定义背景(默认渐变/纯色)⇒ 仍按浅深色模式,与改造前逐像素一致。
+    BackgroundManager *bg = [BackgroundManager sharedManager];
+    if ([bg hasBackground]) { return ![bg backgroundIsLight]; }
     return (tc.userInterfaceStyle != UIUserInterfaceStyleLight);
 }
 
@@ -161,7 +165,7 @@ static NSString *E1SymbolForInstance(NSString *name) {
 /// 实例副文:真实数据 —— 扫描该实例 gameDir/mods 下的 jar 数量 + lastVersionId。
 /// 取不到就退回「无模组」,不编造数字。
 static NSString *E1InstanceSubtitle(NSString *name, NSDictionary *profile) {
-    // ★ [VER-ISOLATE-PCL] 版本隔离统一解析（绝对路径）：隔离开启时统计 versions/<id>/mods
+    // gameDir 统一解析（绝对路径）：版本隔离已删除 ⇒ 恒为共享根。
     NSString *gameDir = amePCLVersionGameDirAbsolute(profile, nil);
     NSUInteger modCount = 0;
     if (gameDir.length > 0) {
@@ -308,6 +312,12 @@ static const void *kE1InstanceNameKey = &kE1InstanceNameKey;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(applyCustomAppearance)
                                                  name:@"LauncherAppearanceChanged"
+                                               object:nil];
+
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重刷 E1 令牌与实例网格前景色
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(ameApplyAdaptiveForegroundForCardLayout)
+                                                 name:AMEForegroundContrastChangedNotification
                                                object:nil];
 }
 
@@ -631,6 +641,11 @@ static const void *kE1InstanceNameKey = &kE1InstanceNameKey;
 }
 
 /// 外观变化时重新应用卡片颜色（保留圆角，重建背景）
+// ★ [BG-CONTRAST] 背景/前景模式变化 ⇒ 卡片基底 + E1 令牌(标题/齿轮/排序/卡内文字)一起重取。
+- (void)ameApplyAdaptiveForegroundForCardLayout {
+    [self applyAppearanceForCurrentInterfaceStyle];
+}
+
 - (void)applyCustomAppearance {
     [self applyCustomCardColorToCard:self.sidebarCard];
     [self applyCustomCardColorToCard:self.contentCard];

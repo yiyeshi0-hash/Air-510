@@ -114,7 +114,7 @@
     @try {
         NSDictionary *prof = PLProfiles.current.profiles[profile];
         if (![prof isKindOfClass:[NSDictionary class]]) return nil;
-        // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>；显式自定义 gameDir 仍优先）。
+        // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根；显式自定义 gameDir 仍优先）。
         //   原实现自拼 prof[@"gameDir"] ⇒ 隔离开启时 gameDir 仍是 "."，会解析到共享根。
         return amePCLVersionGameDirAbsolute(prof, nil);
     } @catch (NSException *ex) {

@@ -6,7 +6,7 @@
 #import "AiInstancesTool.h"
 #import "PLProfiles.h"
 #import "LauncherPreferences.h"
-#import "utils.h"   // ★ [VER-ISOLATE-PCL] 版本隔离统一解析
+#import "utils.h"   // gameDir 统一解析
 
 @interface AiInstancesTool ()
 @property (nonatomic, copy) NSString *internalName;
@@ -155,7 +155,7 @@
         if ([profile isKindOfClass:[NSDictionary class]]) {
             if ([profile[@"name"] isKindOfClass:[NSString class]] && [profile[@"name"] length] > 0) profileName = profile[@"name"];
             if ([profile[@"lastVersionId"] isKindOfClass:[NSString class]]) lastVersionId = profile[@"lastVersionId"];
-            // ★ [VER-ISOLATE-PCL] 版本隔离统一解析（隔离开启 → versions/<版本 id>，关闭 → "."）
+            // gameDir 统一解析（版本隔离已删除 ⇒ 恒为 "."，显式自定义 gameDir 除外）。
             gameDir = amePCLVersionGameDirSubpath(profile, nil);
         }
 

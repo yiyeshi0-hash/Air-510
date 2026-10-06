@@ -20,8 +20,6 @@
 #import "DownloadTaskItem.h"
 #import "PLTaskStages.h"
 #import "ModpackExportService.h" // for parseVersionId:
-#import "VersionAutoMigrateViewController.h" // ★ [VI-MIGRATE-AUTO] 版本数据自动识别迁移
-#import "VersionIsolationWizardViewController.h" // ★ [VI-FLOW] 版本隔离向导（手动重开入口）
 #import "AmePerfProbe.h"        // ★ [PERF] 低开销滚动帧率探针（默认关）
 
 @interface ProfileSettingsViewController () <UITextFieldDelegate, UIPickerViewDataSource, UIPickerViewDelegate>
@@ -65,15 +63,7 @@
 // ★ [INST-SETTINGS] 已收起的组（全局 section 索引）。仅内存态，不落任何偏好键。
 @property (nonatomic, strong) NSMutableIndexSet *ameCollapsedSections;
 
-// ★ [PERF] 「隔离判定」说明行的文本 / 行高缓存。
-//   该说明文本的生成含【磁盘嗅探】(fileExistsAtPath + 2×contentsOfDirectoryAtPath，且同一条
-//   路径在一次生成里要嗅两遍)，行高又要做一次 NSString boundingRectWithSize 文本排版；
-//   原先 heightForRowAtIndexPath 与 cellForRowAtIndexPath 每次都现算 ⇒ 滚动的每一帧都在
-//   主线程做文件 I/O + 文本排版（本页掉帧的主因）。
-//   现在：文本与行高各算一次并缓存，只在数据/剖面变化时失效（见 ameInvalidateExplainCaches）。
-@property (nonatomic, copy, nullable) NSString *ameCachedExplainText;
-@property (nonatomic, assign) CGFloat ameCachedExplainHeight;
-@property (nonatomic, assign) CGFloat ameCachedExplainHeightWidth;
+// ★ [NO-VI] 「隔离判定」说明行及其文本/行高缓存属性已随版本隔离功能删除。
 
 @end
 
@@ -93,12 +83,7 @@ static NSString * localizeProfileTitle(NSString *title) {
             @"名称": @"preference.profile.title.name",
             @"游戏版本": @"i18n_str_2031",
             @"游戏目录": @"preference.title.game_directory",
-            // ★ [VI-SWITCH-UI] 版本隔离（本页才是实例设置的真实页面；LauncherProfileEditorViewController 已被本类取代且无实例化点）
-            @"版本隔离": @"preference.profile.title.version_isolation",
-            // ★ [VI-MIGRATE-AUTO] 版本数据自动识别迁移入口
-            @"版本自动迁移": @"preference.migrate.auto.title",
-            // ★ [VI-FLOW] 手动重新打开版本隔离向导（哨兵落了也能再看）
-            @"版本隔离向导": @"preference.vi.wizard.reopen",
+            // ★ [NO-VI] 版本隔离 / 版本自动迁移 / 版本隔离向导 三个行标题映射已删除。
             @"模组管理": @"i18n_str_2039",
             @"光影管理": @"i18n_str_2016",
             @"资源包管理": @"i18n_str_2040",
@@ -215,8 +200,6 @@ static NSString * localizeProfileTitle(NSString *title) {
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    // ★ [PERF] 每次进入本页让「隔离判定」缓存失效一次（进页只算一遍，滚动期间不再重算）。
-    [self ameInvalidateExplainCaches];
     // 修复"前一个页面没有及时消失"：viewDidLoad 时 tableView.bounds 可能为 zero，
     // 导致 applyBackgroundBlurToTableView 设置的 backgroundView frame 为 zero，
     // push 转场初期无法遮挡栈底 VersionManagerViewController 的内容。
@@ -555,12 +538,10 @@ static NSString * localizeProfileTitle(NSString *title) {
         [runtimeRows addObject:@"图形 API"];
     }
 
-    // ★ [VI-SWITCH-UI] 版本信息组补「版本隔离」开关行 —— 这是用户实际能打开的实例设置页，
-    //   默认展开（不在 ameCollapsedSections 内），保证「设置 → 实例/版本 → 版本信息」即可见可切。
-    // ★ [VI-POLISH] A：该行升级为「自动 / 隔离 / 共享」三态选择；紧随其后补一行只读的「隔离判定」
-    //   说明（当前判定为什么是这个结果 —— 哪个目录存在），行本身不可点、不写任何键。
+    // ★ [NO-VI] 版本信息组不再包含版本隔离开关行（功能已删除）。
     self.sections = @[
-        @[@"名称", @"游戏版本", @"游戏目录", @"版本隔离", @"隔离判定", @"版本自动迁移", @"版本隔离向导"],
+        // ★ [NO-VI] 原「版本隔离」「隔离判定」「版本自动迁移」「版本隔离向导」四行已删除。
+        @[@"名称", @"游戏版本", @"游戏目录"],
         [runtimeRows copy],
         @[@"Java版本", @"JVM 启动参数", @"清除JVM参数"],
         @[@"模组管理", @"光影管理", @"资源包管理", @"数据包管理", @"世界管理"],
@@ -622,21 +603,11 @@ static NSString * localizeProfileTitle(NSString *title) {
 
 /// 重新加载所有 tableView 的数据
 - (void)reloadAllTableViews {
-    // ★ [PERF] 任何数据重载都会让「隔离判定」的缓存可能过期 ⇒ 连带失效（重载本来就是低频事件）。
-    [self ameInvalidateExplainCaches];
+    // ★ [INST-SETTINGS] 任何数据重载都走这里
     [self.leftTableView reloadData];
     if (self.rightTableView && !self.rightTableView.hidden) {
         [self.rightTableView reloadData];
     }
-}
-
-// ★ [PERF] 失效「隔离判定」说明文本 / 行高缓存。
-//   会在：数据重载（reloadAllTableViews）、每次进入本页（viewWillAppear）时调用 ⇒
-//   页面显示的判定依据始终是本次进入/本次变更后的最新结果，只是不再随滚动反复重算。
-- (void)ameInvalidateExplainCaches {
-    self.ameCachedExplainText = nil;
-    self.ameCachedExplainHeight = 0;
-    self.ameCachedExplainHeightWidth = 0;
 }
 
 /// 根据全局 section 和 row 查找 cell（用于 popover sourceView 等）
@@ -690,15 +661,10 @@ static NSString * localizeProfileTitle(NSString *title) {
     } else {
         [existing removeObjectForKey:@"javaArgs"];
     }
-    // 保存游戏目录（版本隔离用）：gameDir 为 nil 时默认 "."，与 main 分支行为一致
+    // 保存游戏目录：gameDir 为 nil 时默认 "."，与 main 分支行为一致
     existing[@"gameDir"] = self.profile[@"gameDir"] ?: @".";
-    // ★ [VI-SWITCH-UI] 版本隔离显式值（"1"/"0"）：用户在本页切过才写；未切过不落键，
-    // 让其继续走 utils.m 的自动判定 → 全局默认。
-    if ([self.profile[@"versionIsolation"] isKindOfClass:[NSString class]]) {
-        existing[@"versionIsolation"] = self.profile[@"versionIsolation"];
-    } else {
-        [existing removeObjectForKey:@"versionIsolation"];
-    }
+    // ★ [NO-VI] 版本隔离功能已删除：本页不再读写 versionIsolation；保存时顺手清除历史残留键。
+    [existing removeObjectForKey:@"versionIsolation"];
     // existing 中的 name 和 lastVersionId 字段保持原始值不变
     PLProfiles.current.profiles[profName] = existing;
     [PLProfiles.current save];
@@ -728,39 +694,8 @@ static NSString * localizeProfileTitle(NSString *title) {
     return [self.sections[globalSection] count];
 }
 
-// ★ [VI-POLISH] A：「隔离判定」说明行按实际文本量自适应高度；其余行一律返回
-// tableView.rowHeight（= 不实现本方法时的既有默认值，无论它是 44 还是 automaticDimension）
-// ⇒ 对其它行零影响；本方法只对「隔离判定」这一行做计算。
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSInteger gs = [self globalSectionForTableView:tableView localSection:indexPath.section];
-    if (gs == 0 && gs < (NSInteger)self.sections.count) {
-        NSArray *rows = self.sections[gs];
-        if (indexPath.row < (NSInteger)rows.count && [rows[indexPath.row] isEqualToString:@"隔离判定"]) {
-            // 宽度按最窄可用宽保守估算（扣实时安全区 + insetGrouped 分组留白）：
-            // 宁可多留一点白，也不让末行被裁。
-            CGFloat avail = tableView.bounds.size.width
-                          - tableView.safeAreaInsets.left - tableView.safeAreaInsets.right - 76.0;
-            CGFloat w = MAX(180.0, avail);
-            // ★ [PERF] 行高缓存：文本本身已缓存，剩下的 boundingRectWithSize 文本排版也没必要
-            //   每次布局都做一遍。同一宽度（同一朝向/同一分栏）下复用上次结果；宽度变了才重算。
-            if (self.ameCachedExplainHeight > 0 &&
-                fabs(self.ameCachedExplainHeightWidth - w) < 0.5) {
-                return self.ameCachedExplainHeight;
-            }
-            CGRect r = [[self ameVersionIsolationExplanationText]
-                        boundingRectWithSize:CGSizeMake(w, CGFLOAT_MAX)
-                                     options:NSStringDrawingUsesLineFragmentOrigin
-                                  attributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:12] }
-                                     context:nil];
-            CGFloat h = ceil(r.size.height) + 24.0 + 18.0;   // 说明行 + 标题行 + 上下留白
-            self.ameCachedExplainHeight = h;
-            self.ameCachedExplainHeightWidth = w;
-            return h;
-        }
-    }
-    CGFloat h = tableView.rowHeight;                    // 与「不实现本方法」逐字等价
-    return (h > 0) ? h : UITableViewAutomaticDimension;
-}
+// ★ [NO-VI] 版本隔离「隔离判定」说明行已删除；本页不再覆写行高（沿用既有默认行高）。
+// - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath: 已移除。
 
 // ★ [INST-SETTINGS] 组标题行统一高度 —— 让组与组之间有稳定的间距与层次
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
@@ -898,17 +833,7 @@ static NSString * localizeProfileTitle(NSString *title) {
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    // ★ [VI-POLISH] A：「隔离判定」说明行 —— 独立载体（Subtitle：标题在上、说明在下 = 「在行下方用一行说明」）。
-    //   纯只读：只展示当前判定为什么是这个结果 + 共享边界 + 关闭恢复提示，不写任何键、不搬任何文件。
-    NSInteger explainSection = [self globalSectionForTableView:tableView localSection:indexPath.section];
-    if (explainSection == 0 && explainSection < (NSInteger)self.sections.count) {
-        NSArray *explainRows = self.sections[explainSection];
-        if (indexPath.row < (NSInteger)explainRows.count &&
-            [explainRows[indexPath.row] isEqualToString:@"隔离判定"]) {
-            return [self ameVersionIsolationExplainCellForTableView:tableView];
-        }
-    }
-
+    // ★ [NO-VI] 「隔离判定」说明行已删除，本方法不再有该行的独立载体分支。
     static NSString *cellIdentifier = @"SettingsCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:cellIdentifier];
     if (!cell) {
@@ -951,39 +876,8 @@ static NSString * localizeProfileTitle(NSString *title) {
                 cell.imageView.image = [UIImage systemImageNamed:@"folder"];
                 cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
                 cell.detailTextLabel.text = self.profile[@"gameDir"] ?: @".";
-            } else if ([title isEqualToString:@"版本隔离"]) {
-                // ★ [VI-POLISH] A：由 UISwitch 升级为「自动 / 隔离 / 共享」三态选择（对齐 Zalith 的
-                //   全局 + 实例三态；我们 profile 的 versionIsolation 本就是这三态，这里只是显式化）。
-                //   自动 = 不落键（走 嗅探 → 全局默认，★ 默认值未改：默认仍是关）；隔离 = "1"；共享 = "0"。
-                //   显示的是「显式三态」而非解析后布尔值 —— 三态必须能看到用户到底选的是哪一种。
-                cell.imageView.image = [UIImage systemImageNamed:@"square.on.square.dashed"];
-                cell.accessoryType = UITableViewCellAccessoryNone;
-                UISegmentedControl *seg = [[UISegmentedControl alloc] initWithItems:@[
-                    localize(@"preference.vi.state.auto", nil),
-                    localize(@"preference.vi.state.isolated", nil),
-                    localize(@"preference.vi.state.shared", nil)]];
-                seg.selectedSegmentIndex = [self ameExplicitSegmentIndex];
-                [seg addTarget:self
-                        action:@selector(ameVersionIsolationSegmentChanged:)
-              forControlEvents:UIControlEventValueChanged];
-                // accessoryView 用显式尺寸（三段短文案），避免不同语言/字号下宽度漂移。
-                CGSize segFit = [seg sizeThatFits:CGSizeMake(CGFLOAT_MAX, 44.0)];
-                seg.frame = CGRectMake(0, 0, MAX(186.0, segFit.width), 32.0);
-                cell.accessoryView = seg;
-                cell.detailTextLabel.text = nil;
-            } else if ([title isEqualToString:@"版本自动迁移"]) {
-                // ★ [VI-MIGRATE-AUTO] 点整行打开「选文件夹 → 自动识别 → 分组确认」页。
-                // 复用既有「图标+标题+detail+chevron」行范式；不在此行做任何扫描/搬运。
-                cell.imageView.image = [UIImage systemImageNamed:@"arrow.triangle.branch"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.detailTextLabel.text = localize(@"preference.migrate.auto.subtitle", nil);
-            } else if ([title isEqualToString:@"版本隔离向导"]) {
-                // ★ [VI-FLOW]（用户修正 1）：手动重新打开版本隔离向导的入口 —— 即使用户已选过
-                //   「以后不再提示」，也能随时再看（本入口不经过哨兵）。复用同一「行范式」。
-                cell.imageView.image = [UIImage systemImageNamed:@"wand.and.stars"];
-                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-                cell.detailTextLabel.text = localize(@"preference.vi.wizard.reopen.subtitle", nil);
             }
+            // ★ [NO-VI] 「版本隔离」「版本自动迁移」「版本隔离向导」三个 cell 分支已删除。
             break;
 
         case 1: // ★ 内存与性能
@@ -1395,15 +1289,8 @@ static NSString * localizeProfileTitle(NSString *title) {
                 if (self.versionTextField) [self.versionTextField becomeFirstResponder];  // 弹出式 picker
             } else if ([title isEqualToString:@"游戏目录"]) {
                 [self editGameDir];                            // 既有弹出式文本输入
-            } else if ([title isEqualToString:@"版本隔离"]) {
-                [self ameCycleVersionIsolation];                // ★ [VI-POLISH] A：点整行在三态间循环
-            } else if ([title isEqualToString:@"隔离判定"]) {
-                // ★ [VI-POLISH] A：只读说明行，点它不产生任何动作（无写入、无弹窗）。
-            } else if ([title isEqualToString:@"版本自动迁移"]) {
-                [self ameOpenAutoMigrate];                      // ★ [VI-MIGRATE-AUTO]
-            } else if ([title isEqualToString:@"版本隔离向导"]) {
-                [self ameOpenVersionIsolationWizard];           // ★ [VI-FLOW] 手动重开向导
             }
+            // ★ [NO-VI] 「版本隔离」「隔离判定」「版本自动迁移」「版本隔离向导」四个分发分支已删除。
             break;
 
         case 1: // ★ 内存与性能
@@ -1511,210 +1398,14 @@ static NSString * localizeProfileTitle(NSString *title) {
     }];
 }
 
-/// ★ [VI-SWITCH-UI] 版本隔离：显示值 = 「解析后的实际生效值」。
-/// profile 有显式值（"1"/"0"）用它；否则交给 utils.m 的统一解析（自动判定 → 全局默认
-/// general.version_isolation），与启动器 utils.m / JavaLauncher.m 完全同源，避免"UI 显示
-/// 关了但实际还隔离着"这类不一致。
-- (BOOL)ameResolvedVersionIsolation {
-    id raw = self.profile[@"versionIsolation"];
-    if (raw) return [raw boolValue];
-    id vid = self.profile[@"lastVersionId"];
-    return amePCLVersionIsolationForProfile(self.profile,
-               [vid isKindOfClass:NSString.class] ? (NSString *)vid : nil);
-}
-
-- (void)ameSetExplicitIsolationState:(AmeVIExplicitState)state {
-    // ★ [VI-POLISH] A：只写 profile 的 versionIsolation 一个键（自动 = 移除该键）。
-    // 写入路径仍是既有 saveSettings（saveSettings 已按「是 NSString 就写、否则移除」处理）；
-    // 不改任何默认值、不移动任何文件。
-    AmeVIExplicitState prev = ameVIExplicitStateForProfile(self.profile);   // ★ [VI-FLOW] 记录转变前状态
-    ameVISetExplicitStateForProfile(self.profile, state);
-    [self saveSettings];
-    [self reloadAllTableViews];
-
-    // ★ [VI-FLOW]（用户修正 3）：在本实例里【刚打开隔离】后，紧接一个「要不要迁移」询问。
-    //   复用既有自动识别迁移能力（VersionAutoMigrateViewController）：它会自动识别「哪些该搬」
-    //   （mod/存档等按 版本+加载器 分组）并【预勾选】可匹配项；用户只决定搬不搬、搬哪些
-    //   （目标由自动识别决定，页内不再提供改归属）。
-    //   只在「非隔离 → 隔离」这一次转变时问，避免每次重设都打扰。
-    if (state == AmeVIExplicitStateIsolated && prev != AmeVIExplicitStateIsolated) {
-        // ★ [VI-UI-FIX] 用户实测 bug②「选完隔离后没有任何继续选项、流程断死」根因修复：
-        //   本方法刚调用过 [self reloadAllTableViews]（reloadData 会拆掉正在派发本次
-        //   UIControlEventValueChanged 的分段控件 / 所在 cell）；在同一轮 runloop 里紧接着
-        //   同步 presentViewController，一旦此时该 VC 仍有模态在收尾（选择器 / 其它 alert），
-        //   UIKit 会静默丢弃这次 present ⇒ 用户看到的就是「点了隔离，什么都没弹」。
-        //   修法：把询问延到【下一轮 runloop】再发（等表格重载 / 转场收尾完毕），
-        //   并且由 amePromptMigrateAfterEnablingIsolation 内部解析【最顶层可呈现 VC】。
-        __weak ProfileSettingsViewController *ws = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [ws amePromptMigrateAfterEnablingIsolation];
-        });
-    }
-}
-
-/// ★ [VI-POLISH] A：显式三态 → 分段下标（0=自动 / 1=隔离 / 2=共享）。
-- (NSInteger)ameExplicitSegmentIndex {
-    switch (ameVIExplicitStateForProfile(self.profile)) {
-        case AmeVIExplicitStateIsolated: return 1;
-        case AmeVIExplicitStateShared:   return 2;
-        case AmeVIExplicitStateAuto:
-        default:                         return 0;
-    }
-}
-
-/// ★ [VI-POLISH] A：分段控件回调。
-- (void)ameVersionIsolationSegmentChanged:(UISegmentedControl *)sender {
-    AmeVIExplicitState st = AmeVIExplicitStateAuto;
-    if (sender.selectedSegmentIndex == 1)      st = AmeVIExplicitStateIsolated;
-    else if (sender.selectedSegmentIndex == 2) st = AmeVIExplicitStateShared;
-    [self ameSetExplicitIsolationState:st];
-}
-
-/// ★ [VI-POLISH] A：点整行 ⇒ 自动 → 隔离 → 共享 → 自动 循环。
-- (void)ameCycleVersionIsolation {
-    NSInteger next = ([self ameExplicitSegmentIndex] + 1) % 3;
-    AmeVIExplicitState st = AmeVIExplicitStateAuto;
-    if (next == 1)      st = AmeVIExplicitStateIsolated;
-    else if (next == 2) st = AmeVIExplicitStateShared;
-    [self ameSetExplicitIsolationState:st];
-}
-
-/// ★ [VI-POLISH] A/C/D：「隔离判定」说明文本 —— 当前判定为什么是这个结果（哪目录存在）
-/// + 共享边界（C）+ 关闭恢复提示（D）。纯只读，全部走 localize（四语）。
-- (NSString *)ameVersionIsolationExplanationText {
-    // ★ [PERF] 命中缓存直接返回。本方法原先被 heightForRowAtIndexPath（每次布局）与
-    //   cellForRowAtIndexPath（每次出队）各调一次，而每次都要做多轮文件系统嗅探 ⇒ 滚动卡顿主因。
-    //   缓存由 ameInvalidateExplainCaches 在「数据重载 / 进入本页」时失效。
-    if (self.ameCachedExplainText) return self.ameCachedExplainText;
-
-    NSMutableArray<NSString *> *lines = [NSMutableArray array];
-
-    NSString *vid = nil;
-    id v = self.profile[@"lastVersionId"];
-    if ([v isKindOfClass:NSString.class]) vid = (NSString *)v;
-
-    AmeVIExplicitState st = ameVIExplicitStateForProfile(self.profile);
-    BOOL resolved = [self ameResolvedVersionIsolation];
-
-    if (st == AmeVIExplicitStateIsolated) {
-        [lines addObject:localize(@"preference.vi.explain.explicit.on", nil)];
-    } else if (st == AmeVIExplicitStateShared) {
-        [lines addObject:localize(@"preference.vi.explain.explicit.off", nil)];
-    } else if (vid.length == 0) {
-        [lines addObject:localize(@"preference.vi.explain.noversion", nil)];
-    } else {
-        NSDictionary *sniff = ameVISniffVersionFolder(vid);
-        if ([sniff[@"hasAny"] boolValue]) {
-            // 自动判定命中：说明是哪（几）个目录存在 ⇒ 用户能核对自己看到的判定依据。
-            NSMutableArray *hit = [NSMutableArray array];
-            if ([sniff[@"hasMods"] boolValue])  [hit addObject:@"mods"];
-            if ([sniff[@"hasSaves"] boolValue]) [hit addObject:@"saves"];
-            [lines addObject:[NSString stringWithFormat:localize(@"preference.vi.explain.sniff.hit", nil),
-                              [hit componentsJoinedByString:@" / "]]];
-        } else {
-            [lines addObject:[NSString stringWithFormat:localize(@"preference.vi.explain.sniff.miss", nil),
-                              resolved ? localize(@"preference.vi.state.isolated", nil)
-                                       : localize(@"preference.vi.state.shared", nil)]];
-        }
-    }
-
-    // ★ [VI-POLISH] C：共享边界写死（隔离后哪些进版本目录、哪些始终共享 —— 对齐 HMCL-PE 的
-    //   「除 assets、libraries」写法，并补上 Java 运行时 / 启动库）。
-    [lines addObject:localize(@"preference.vi.shared.boundary", nil)];
-    // ★ [VI-POLISH] D：关闭隔离的恢复提示（与 PCL 官方那句同义：关掉即回原目录、数据不丢）。
-    [lines addObject:localize(@"preference.vi.recover.hint", nil)];
-
-    // ★ [PERF] 落缓存后返回（见方法开头；失效点见 ameInvalidateExplainCaches）。
-    NSString *text = [lines componentsJoinedByString:@"\n"];
-    self.ameCachedExplainText = text;
-    return text;
-}
-
-/// ★ [VI-POLISH] A：「隔离判定」说明行载体（Subtitle：标题在上、说明在下）。不可点、无 accessory。
-- (UITableViewCell *)ameVersionIsolationExplainCellForTableView:(UITableView *)tableView {
-    static NSString *kExplainCellId = @"SettingsVIExplainCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:kExplainCellId];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:kExplainCellId];
-        [[BackgroundManager sharedManager] applyEffectToCell:cell];   // 与同页其它行一致的材质
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.textLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
-        cell.detailTextLabel.numberOfLines = 0;
-        cell.detailTextLabel.font = [UIFont systemFontOfSize:12];
-        cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    }
-    cell.imageView.image = nil;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.accessoryView = nil;
-    cell.textLabel.text = localize(@"preference.vi.explain.title", nil);
-    cell.textLabel.textColor = [UIColor labelColor];
-    cell.detailTextLabel.text = [self ameVersionIsolationExplanationText];
-    return cell;
-}
-
-/// ★ [VI-UI-FIX] 取「当前最顶层、可呈现模态」的控制器。
-/// 直接用 self 调 present 时，如果 self 上已经挂着一个正在呈现/收尾的模态，UIKit 会
-/// 静默丢弃这次 present（控制台只留一条 warning）⇒ 表现为「点了没反应」。
-/// 沿 presentedViewController 链走到最顶层再呈现，保证弹窗真的出现。
-- (UIViewController *)ameTopPresenter {
-    UIViewController *p = self;
-    NSUInteger guard = 0;
-    while (p.presentedViewController && guard++ < 8) p = p.presentedViewController;
-    return p ?: self;
-}
-
-/// ★ [VI-MIGRATE-AUTO] 打开「版本数据自动识别迁移」页（选文件夹 → 自动识别 → 分组确认）。
-/// 默认不扫不搬：本页打开前不做任何扫描；页内点「迁移选中」才走迁移引擎。
-- (void)ameOpenAutoMigrate {
-    VersionAutoMigrateViewController *vc = [[VersionAutoMigrateViewController alloc] init];
-    vc.profile = self.profile;
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    // ★ [VI-UI-FIX] 由最顶层 VC 呈现；并延到下一轮 runloop —— 若本方法是从 alert 的
-    //   action handler 里调用（「去迁移」），此刻该 alert 仍在收尾，同步 present 会被丢弃。
-    UIViewController *presenter = [self ameTopPresenter];
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [presenter presentViewController:nav animated:YES completion:nil];
-    });
-}
-
-/// ★ [VI-FLOW]（用户修正 3）：刚打开版本隔离后，紧接一个「要不要迁移 mod / 存档」的询问。
-/// 不强制：可「暂不」；点「去迁移」即复用既有自动识别迁移页（目标由识别决定、可自动预勾选）。
-/// 纯入口，不在此扫描、不搬任何文件。
-- (void)amePromptMigrateAfterEnablingIsolation {
-    UIAlertController *a = [UIAlertController
-        alertControllerWithTitle:localize(@"preference.vi.flow.migrate.title", nil)
-                         message:localize(@"preference.vi.flow.migrate.msg", nil)
-                  preferredStyle:UIAlertControllerStyleAlert];
-    __weak ProfileSettingsViewController *ws = self;
-    // ★ [VI-UI-FIX]「暂不」：设置已在本方法调用前由 saveSettings 落盘，这里只关闭弹窗，不报错。
-    [a addAction:[UIAlertAction actionWithTitle:localize(@"preference.vi.flow.migrate.later", nil)
-                                         style:UIAlertActionStyleCancel
-                                       handler:^(UIAlertAction *x){
-        NSLog(@"★ [VI-UI-FIX] 版本隔离：用户选择「暂不」迁移（设置已保存，未搬任何文件）");
-    }]];
-    // ★ [VI-UI-FIX]「去迁移」：消息体已由 ameOpenAutoMigrate 延到下一轮 runloop 呈现，
-    //   保证本 alert 收尾后再 present 迁移页（两个动作都必须有效，不能有一个点了没反应）。
-    [a addAction:[UIAlertAction actionWithTitle:localize(@"preference.vi.flow.migrate.go", nil)
-                                         style:UIAlertActionStyleDefault handler:^(UIAlertAction *x){
-        NSLog(@"★ [VI-UI-FIX] 版本隔离：用户选择「去迁移」⇒ 打开自动识别迁移页");
-        [ws ameOpenAutoMigrate];
-    }]];
-    // ★ [VI-UI-FIX] 由最顶层可呈现 VC 弹出，避免 self 已挂模态时被静默丢弃。
-    UIViewController *presenter = [self ameTopPresenter];
-    [presenter presentViewController:a animated:YES completion:nil];
-}
-
-/// ★ [VI-FLOW]（用户修正 1）：手动重新打开版本隔离向导。
-/// 直接 present（【不】经过哨兵）⇒ 即使用户已选过「以后不再提示」，也随时能再看。
-/// 只是打开本页（只写设置、不搬文件），不改任何东西。
-- (void)ameOpenVersionIsolationWizard {
-    VersionIsolationWizardViewController *vc = [[VersionIsolationWizardViewController alloc] init];
-    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
-    nav.modalPresentationStyle = UIModalPresentationFormSheet;
-    [self presentViewController:nav animated:YES completion:nil];
-}
+// ★ [NO-VI] 版本隔离相关的全部方法已删除：
+//   ameResolvedVersionIsolation / ameSetExplicitIsolationState: /
+//   ameExplicitSegmentIndex / ameVersionIsolationSegmentChanged: /
+//   ameCycleVersionIsolation / ameVersionIsolationExplanationText /
+//   ameVersionIsolationExplainCellForTableView: / ameTopPresenter /
+//   ameOpenAutoMigrate / amePromptMigrateAfterEnablingIsolation /
+//   ameOpenVersionIsolationWizard
+//   （三态开关、隔离判定说明、迁移询问、自动识别迁移页、手动重开向导 全部移除）。
 
 /// ★ [INST-SETTINGS] JVM 启动参数：内联输入框 ⇒ 弹出式输入框（写入路径不变）
 - (void)ameEditJavaArgs {
@@ -1773,7 +1464,7 @@ static NSString * localizeProfileTitle(NSString *title) {
 
 /// 编辑游戏目录（仿 main 分支 LauncherProfileEditorViewController 的 gameDir 文本框）
 /// gameDir="." 表示使用当前 POJAV_GAME_DIR（即"游戏目录切换"选中的实例目录）
-/// 也可以输入相对路径（相对于 POJAV_GAME_DIR）或绝对路径来实现版本隔离
+/// 也可以输入相对路径（相对于 POJAV_GAME_DIR）或绝对路径，指向自定义游戏目录
 - (void)editGameDir {
     NSString *currentGameDir = self.profile[@"gameDir"] ?: @".";
     NSString *currentInstance = getPrefObject(@"general.game_directory") ?: @"default";
@@ -1889,8 +1580,7 @@ static NSString * localizeProfileTitle(NSString *title) {
 
 /// 当前 profile 的 mods 目录路径
 - (NSString *)currentProfileModsPath {
-    // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>；显式自定义 gameDir 仍优先）。
-    //   原实现自拼 self.profile[@"gameDir"] ⇒ 隔离开启时该键仍是 "."，会落到共享根。
+    // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根；显式自定义 gameDir 仍优先）。
     NSString *modsBase = amePCLVersionGameDirAbsolute(self.profile, nil);
     if (modsBase.length == 0) {
         const char *env = getenv("POJAV_GAME_DIR");

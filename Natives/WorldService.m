@@ -68,10 +68,10 @@
 
 #pragma mark - 工具方法
 
-// 解析 profile 的 gameDir，返回「版本隔离」解析后的绝对路径
+// 解析 profile 的 gameDir，返回解析后的绝对路径（版本隔离已删除 ⇒ 恒为共享根）。
 - (nullable NSString *)gameDirForProfile:(NSString *)profileName {
     NSString *profile = profileName.length ? profileName : @"default";
-    // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>），不再自拼 gameDir。
+    // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根），不再自拼 gameDir。
     NSDictionary *prof = nil;
     @try {
         prof = PLProfiles.current.profiles[profile];
@@ -88,7 +88,7 @@
 
     @try {
         NSDictionary *prof = PLProfiles.current.profiles[profile];
-        // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>），不再自拼 gameDir。
+        // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根），不再自拼 gameDir。
         NSString *gameDir = amePCLVersionGameDirAbsolute(prof, nil);
         if (gameDir.length > 0) {
             NSString *savesPath = [gameDir stringByAppendingPathComponent:@"saves"];
@@ -107,7 +107,7 @@
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *savesPath = nil;
 
-    // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>），不再自拼 gameDir。
+    // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根），不再自拼 gameDir。
     NSDictionary *prof = nil;
     @try {
         prof = PLProfiles.current.profiles[profile];

@@ -519,6 +519,8 @@ static NSString *festivalGreeting(void) {
 /// ★ [EDIT2] 编辑态切换的唯一实现:animated=YES ⇒ 把手弹簧弹入/淡出 + 卡片一次轻微浮起;
 ///   复用复位等断言路径一律 animated=NO(硬复位,保证不残留)。
 - (void)homeEditTransitionToEditing:(BOOL)editing animated:(BOOL)animated;
+/// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色(基类默认 no-op;子类各自重设自己的标签/图标)
+- (void)ameApplyAdaptiveForeground;
 @end
 
 @implementation HomeTileBaseCell
@@ -530,6 +532,11 @@ static NSString *festivalGreeting(void) {
         [[NSNotificationCenter defaultCenter] addObserver:self
                                                  selector:@selector(handleBackgroundUIEffectChanged)
                                                      name:@"BackgroundUIEffectChanged"
+                                                   object:nil];
+        // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重刷卡内前景色
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleBackgroundUIEffectChanged)
+                                                     name:AMEForegroundContrastChangedNotification
                                                    object:nil];
     }
     return self;
@@ -544,7 +551,12 @@ static NSString *festivalGreeting(void) {
     // ★ [HOME6] 背景观感/高光强度重刷后重新贴玻璃(幂等;用户把高光强度调到 0 时会自动摘掉)
     AmeAttachGlassRim(self, kHome6CardRadius);
     AmeRefreshGlassRim(self);
+    // ★ [BG-CONTRAST] 同一触发点重刷卡内前景色(自定义背景亮暗变化时保持可读)
+    [self ameApplyAdaptiveForeground];
 }
+
+// ★ [BG-CONTRAST] 基类默认:无前景元素需要重刷(子类覆盖)
+- (void)ameApplyAdaptiveForeground { }
 
 - (void)setupBaseViews {
     // ★ [HOME6] 便当盒玻璃卡:圆角照 home6 `.c6 .bt{border-radius:.9em}` ⇒ 13pt(12~16 区间)。
@@ -605,7 +617,7 @@ static NSString *festivalGreeting(void) {
     UIImageView *handleIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.up.left.and.arrow.down.right"]];
     handleIcon.translatesAutoresizingMaskIntoConstraints = NO;
     handleIcon.contentMode = UIViewContentModeScaleAspectFit;
-    handleIcon.tintColor = [UIColor secondaryLabelColor];
+    handleIcon.tintColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     [self.homeEditHandleView addSubview:handleIcon];
     [NSLayoutConstraint activateConstraints:@[
         [self.homeEditHandleView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-6],
@@ -815,6 +827,13 @@ static NSString *festivalGreeting(void) {
 @end
 
 @implementation HomeProfileTileCell
+// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色
+- (void)ameApplyAdaptiveForeground {
+    self.welcomeLabel.textColor  = AMEForegroundColor(AMEForegroundRolePrimary);
+    self.greetingLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);
+    self.versionLabel.textColor  = AMEForegroundColor(AMEForegroundRoleSecondary);
+}
+
 
 - (void)setupBaseViews {
     [super setupBaseViews];
@@ -858,7 +877,7 @@ static NSString *festivalGreeting(void) {
     self.welcomeLabel = [[UILabel alloc] init];
     self.welcomeLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.welcomeLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
-    self.welcomeLabel.textColor = [UIColor labelColor];
+    self.welcomeLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.welcomeLabel.numberOfLines = 1;
     self.welcomeLabel.adjustsFontSizeToFitWidth = YES;
     self.welcomeLabel.minimumScaleFactor = 0.7;
@@ -868,17 +887,17 @@ static NSString *festivalGreeting(void) {
     self.greetingLabel = [[UILabel alloc] init];
     self.greetingLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.greetingLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.greetingLabel.textColor = [UIColor secondaryLabelColor];
+    self.greetingLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.greetingLabel.numberOfLines = 1;
     [self.contentContainer addSubview:self.greetingLabel];
 
     // ★ [NORIGHT] 版本号从右栏搬进「欢迎回来」卡(用户:头像 + 用户名 + 版本号 → 主页欢迎卡)。
-    //   文本仍由右栏 updateVersionInfo 决定(含版本隔离文案 i18n_str_440),经
+    //   文本仍由右栏 updateVersionInfo 决定(现为纯版本号),经
     //   AmeRightPanelStateNotification 同步过来 ⇒ 显示口径与右栏完全一致。
     self.versionLabel = [[UILabel alloc] init];
     self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.versionLabel.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightMedium];
-    self.versionLabel.textColor = [UIColor secondaryLabelColor];
+    self.versionLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.versionLabel.textAlignment = NSTextAlignmentCenter;
     self.versionLabel.layer.cornerRadius = 10.0;
     self.versionLabel.layer.cornerCurve = kCACornerCurveContinuous;
@@ -1004,6 +1023,12 @@ static NSString *festivalGreeting(void) {
 @end
 
 @implementation HomeInfoTileCell
+// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色
+- (void)ameApplyAdaptiveForeground {
+    self.titleLabel.textColor = AMEForegroundColor(AMEForegroundRoleTertiary);
+    self.valueLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);
+}
+
 
 - (void)setupBaseViews {
     [super setupBaseViews];
@@ -1017,14 +1042,14 @@ static NSString *festivalGreeting(void) {
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    self.titleLabel.textColor = [UIColor tertiaryLabelColor];
+    self.titleLabel.textColor = AMEForegroundColor(AMEForegroundRoleTertiary);   // ★ [BG-CONTRAST]
     self.titleLabel.textAlignment = NSTextAlignmentLeft;
     [self.contentContainer addSubview:self.titleLabel];
     
     self.valueLabel = [[UILabel alloc] init];
     self.valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.valueLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
-    self.valueLabel.textColor = [UIColor labelColor];
+    self.valueLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.valueLabel.numberOfLines = 2;
     self.valueLabel.adjustsFontSizeToFitWidth = YES;
     self.valueLabel.minimumScaleFactor = 0.6;
@@ -1057,6 +1082,11 @@ static NSString *festivalGreeting(void) {
 @end
 
 @implementation HomeAnnouncementTileCell
+// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色
+- (void)ameApplyAdaptiveForeground {
+    self.messageLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);
+}
+
 
 - (void)setupBaseViews {
     [super setupBaseViews];
@@ -1071,7 +1101,7 @@ static NSString *festivalGreeting(void) {
     self.messageLabel = [[UILabel alloc] init];
     self.messageLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.messageLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.messageLabel.textColor = [UIColor labelColor];
+    self.messageLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.messageLabel.numberOfLines = 0;
     [self.contentContainer addSubview:self.messageLabel];
     
@@ -1121,6 +1151,14 @@ static NSString *festivalGreeting(void) {
 @end
 
 @implementation HomeNewsTileCell
+// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色
+- (void)ameApplyAdaptiveForeground {
+    self.thumbnailView.tintColor   = AMEForegroundColor(AMEForegroundRoleTertiary);
+    self.titleLabel.textColor      = AMEForegroundColor(AMEForegroundRolePrimary);
+    self.summaryLabel.textColor    = AMEForegroundColor(AMEForegroundRoleTertiary);
+    self.placeholderLabel.textColor = AMEForegroundColor(AMEForegroundRoleQuaternary);
+}
+
 
 - (void)setupBaseViews {
     [super setupBaseViews];
@@ -1134,14 +1172,14 @@ static NSString *festivalGreeting(void) {
     self.thumbnailView.layer.cornerCurve = kCACornerCurveContinuous;
     self.thumbnailView.backgroundColor = [UIColor tertiarySystemFillColor];
     self.thumbnailView.image = [UIImage systemImageNamed:@"newspaper.fill"];
-    self.thumbnailView.tintColor = [UIColor tertiaryLabelColor];
+    self.thumbnailView.tintColor = AMEForegroundColor(AMEForegroundRoleTertiary);   // ★ [BG-CONTRAST]
     [self.contentContainer addSubview:self.thumbnailView];
     
     // 标题
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
-    self.titleLabel.textColor = [UIColor labelColor];
+    self.titleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.titleLabel.numberOfLines = 2;
     [self.contentContainer addSubview:self.titleLabel];
     
@@ -1149,7 +1187,7 @@ static NSString *festivalGreeting(void) {
     self.summaryLabel = [[UILabel alloc] init];
     self.summaryLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.summaryLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    self.summaryLabel.textColor = [UIColor tertiaryLabelColor];
+    self.summaryLabel.textColor = AMEForegroundColor(AMEForegroundRoleTertiary);   // ★ [BG-CONTRAST]
     self.summaryLabel.numberOfLines = 2;
     [self.contentContainer addSubview:self.summaryLabel];
     
@@ -1157,7 +1195,7 @@ static NSString *festivalGreeting(void) {
     self.placeholderLabel = [[UILabel alloc] init];
     self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.placeholderLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption2];
-    self.placeholderLabel.textColor = [UIColor quaternaryLabelColor];
+    self.placeholderLabel.textColor = AMEForegroundColor(AMEForegroundRoleQuaternary);   // ★ [BG-CONTRAST]
     self.placeholderLabel.text = localize(@"i18n_str_346", nil);
     [self.contentContainer addSubview:self.placeholderLabel];
     
@@ -1235,6 +1273,12 @@ static NSString *festivalGreeting(void) {
 @end
 
 @implementation HomeShortcutTileCell
+// ★ [BG-CONTRAST] 背景变化后重刷卡内前景色
+- (void)ameApplyAdaptiveForeground {
+    self.titleLabel.textColor   = AMEForegroundColor(AMEForegroundRolePrimary);
+    self.chevronView.tintColor  = AMEForegroundColor(AMEForegroundRoleTertiary);
+}
+
 
 - (void)setupBaseViews {
     [super setupBaseViews];
@@ -1248,7 +1292,7 @@ static NSString *festivalGreeting(void) {
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.titleLabel.textColor = [UIColor labelColor];
+    self.titleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.titleLabel.numberOfLines = 1;
     self.titleLabel.adjustsFontSizeToFitWidth = YES;
     self.titleLabel.minimumScaleFactor = 0.7;
@@ -1258,7 +1302,7 @@ static NSString *festivalGreeting(void) {
     self.chevronView.translatesAutoresizingMaskIntoConstraints = NO;
     self.chevronView.contentMode = UIViewContentModeScaleAspectFit;
     self.chevronView.image = [UIImage systemImageNamed:@"chevron.right"];
-    self.chevronView.tintColor = [UIColor tertiaryLabelColor];
+    self.chevronView.tintColor = AMEForegroundColor(AMEForegroundRoleTertiary);   // ★ [BG-CONTRAST]
     [self.contentContainer addSubview:self.chevronView];
     
     [NSLayoutConstraint activateConstraints:@[
@@ -1436,6 +1480,12 @@ static NSString *festivalGreeting(void) {
                                                  name:@"BackgroundUIEffectChanged"
                                                object:nil];
 
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ 重刷顶栏/胶囊/可见卡前景色
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(ameApplyAdaptiveForegroundToHome)
+                                                 name:AMEForegroundContrastChangedNotification
+                                               object:nil];
+
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(updateSkinDisplay)
                                                  name:@"AccountChanged"
@@ -1572,7 +1622,7 @@ static NSString *festivalGreeting(void) {
     self.headerTitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.headerTitleLabel.text = localize(@"i18n_str_349", nil);   // ★ [HOME6] 文案 key 不动
     self.headerTitleLabel.font = [UIFont systemFontOfSize:kHome6HeaderTitleSize weight:UIFontWeightBold];
-    self.headerTitleLabel.textColor = [UIColor labelColor];
+    self.headerTitleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     [self.headerView addSubview:self.headerTitleLabel];
 
     self.customizeButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -1616,7 +1666,7 @@ static NSString *festivalGreeting(void) {
     self.norightJITPill.layer.cornerCurve = kCACornerCurveContinuous;
     self.norightJITPill.layer.masksToBounds = YES;
     self.norightJITPill.text = [NSString stringWithFormat:@" %@ ", localize(@"i18n_str_413", nil)];
-    self.norightJITPill.textColor = [UIColor secondaryLabelColor];
+    self.norightJITPill.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.norightJITPill.backgroundColor = [UIColor tertiarySystemFillColor];
     [self.headerView addSubview:self.norightJITPill];
 
@@ -1796,7 +1846,7 @@ static NSString *festivalGreeting(void) {
     self.norightLaunchCapsule.layer.cornerCurve = kCACornerCurveContinuous;
     self.norightLaunchCapsule.layer.borderWidth = 1.0;
     self.norightLaunchCapsule.layer.borderColor = norightAccent.CGColor;
-    [self.norightLaunchCapsule setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [self.norightLaunchCapsule setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];   // ★ [BG-CONTRAST]
     UIImage *norightPlay = [UIImage systemImageNamed:@"play.fill"];
     if (norightPlay) {
         norightPlay = [norightPlay imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
@@ -3273,6 +3323,17 @@ static NSString *festivalGreeting(void) {
 - (void)reapplyBackgroundEffect {
     [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
     self.collectionView.backgroundColor = [UIColor clearColor];
+    [self ameApplyAdaptiveForegroundToHome];   // ★ [BG-CONTRAST]
+}
+
+// ★ [BG-CONTRAST] 背景/前景模式变化 ⇒ 顶栏标题 + 底部胶囊 + 可见卡重取自适应前景色。
+//   (JIT pill 的着色由 updateJITStatus 的状态色管理,不在此覆盖,避免与状态色打架。)
+- (void)ameApplyAdaptiveForegroundToHome {
+    self.headerTitleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);
+    [self.norightLaunchCapsule setTitleColor:AMEForegroundColor(AMEForegroundRolePrimary) forState:UIControlStateNormal];
+    for (HomeTileBaseCell *c in self.collectionView.visibleCells) {
+        if ([c isKindOfClass:[HomeTileBaseCell class]]) { [c ameApplyAdaptiveForeground]; }
+    }
 }
 
 @end

@@ -1808,24 +1808,14 @@ int launchJVM(NSString *accountId, id launchTarget, int width, int height, int m
         NSLog(@"[JavaLauncher] GRAPHICS_API is set to %@\n", graphicsApi);
 
         // Setup gameDir
-        // ★ [VER-ISOLATE-PCL] 子路径改由「版本隔离」统一解析函数给出（对齐 PCL-CE 的
-        //   实例隔离 / VersionArgumentIndieV2 语义）：
-        //     关闭（默认）⇒ "."（实例根）——与改动前逐字节一致，零行为变化；
-        //     开启        ⇒ "versions/<版本 id>"（mods/config/saves/... 全部落该目录）。
-        //   profile 显式写了非 "." 的 gameDir 时仍以显式值为准（见 amePCLVersionGameDirSubpath）。
-        NSString *viConcreteId = nil;
-        if ([launchTarget isKindOfClass:NSDictionary.class]) {
-            viConcreteId = [launchTarget[@"id"] description];
-        } else if ([launchTarget isKindOfClass:NSString.class]) {
-            viConcreteId = (NSString *)launchTarget;
-        }
-        NSString *viGameDirSub = amePCLVersionGameDirSubpath(PLProfiles.current.selectedProfile, viConcreteId);
+        // ★ [NO-VI] 版本隔离已删除：gameDir 子路径恒为共享根 "."（显式自定义 gameDir 仍优先），
+        //   统一走 amePCLVersionGameDirSubpath（保留该 API 供各处 gameDir 解析复用）。
+        NSString *viGameDirSub = amePCLVersionGameDirSubpath(PLProfiles.current.selectedProfile, nil);
         gameDir = [NSString stringWithFormat:@"%s/instances/%@/%@",
             getenv("POJAV_HOME"), getPrefObject(@"general.game_directory"),
             viGameDirSub]
             .stringByStandardizingPath;
-        NSLog(@"[VER-ISOLATE-PCL] gameDir=%@ (版本隔离=%@, 约束版本 id=%@)",
-              gameDir, [viGameDirSub isEqualToString:@"."] ? @"关" : @"开", viConcreteId ?: @"(nil)");
+        NSLog(@"[NO-VI] gameDir=%@", gameDir);
 
         // ★ [MODS-PRELOAD-FIX] 原先这里会把 bundle 的 mods_preload/MetalUniversal-*.jar
         //   拷进实例 mods/。该机制已下线:26.x 的 Metal 后端全程走 `-javaagent:metallum_agent.jar`

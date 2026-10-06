@@ -559,9 +559,7 @@ int main(int argc, char *argv[]) {
     init_setupMultiDir();
     toggleIsolatedPref(NO);
     [PLProfiles updateCurrent];
-    // ★ [VER-ISOLATE-PCL] 版本隔离开关一次性幂等迁移：必须在 POJAV_GAME_DIR 就绪
-    // （init_setupMultiDir）与 PLProfiles 刷新之后；哨兵保证只跑一次，失败不阻断启动。
-    amePCLMigrateVersionIsolationOnce();
+    // ★ [NO-VI] 版本隔离一次性迁移（amePCLMigrateVersionIsolationOnce）已随功能删除。
     init_setupAccounts();
     init_setupCustomControls();
 

@@ -237,10 +237,7 @@ NSString *const PREF_MOD_MIRROR = @"general.mod_mirror";
         @"internal": @{
             @"isolated": @NO,
             @"latest_version": [NSDictionary new],
-            // ★ [VER-ISOLATE-PCL] 版本隔离一次性迁移哨兵（对应 [UI-LAYOUT-MIGRATE] 的写法）：
-            // YES 表示"升级前已手工隔离过"的 profile 已被显式写回 versionIsolation。
-            // 默认值只在键缺失时写入，故哨兵保证迁移只跑一次且不会被重复覆盖。
-            @"version_isolation_migrated": @NO,
+            // ★ [NO-VI] 版本隔离一次性迁移哨兵 internal.version_isolation_migrated 已随功能删除。
             // Task129d 迁移哨兵：YES 表示旧的 32MB 着色器缓存默认已治愈为 128MB。
             // 默认值只在键缺失时写入，而 @(32) 也会占住键——存量设备的 plist
             // 里那个 32 必须迁移一次才吃得到新默认；本哨兵保证只跑一次，
@@ -253,12 +250,7 @@ NSString *const PREF_MOD_MIRROR = @"general.mod_mirror";
         // Preferences that cannot be isolated
         NSDictionary *general = @{
             @"game_directory": @"default",
-            // ★ [VER-ISOLATE-PCL] 默认版本隔离（全局，对应 PCL-CE 的「默认实例隔离」
-            // LaunchArgumentIndieV2）。关闭 = 实例内各版本共享 mods/config/saves（现状，
-            // 默认值沿用本工程既有习惯，保证升级零行为变化）；开启 = 逐版本隔离到
-            // <实例根>/versions/<版本 id>/。单版本可在「编辑配置」页用 versionIsolation 覆盖。
-            // 放在 global 段（不可被实例偏好覆盖），与 game_directory 同层。
-            @"version_isolation": @NO,
+            // ★ [NO-VI] 全局默认 general.version_isolation 已随版本隔离功能删除。
             @"hidden_sidebar": @(realUIIdiom == UIUserInterfaceIdiomPhone),
             @"appicon": @"AppIcon-Light",
             // ★ [UI-LAYOUT] 遗留键：布局已改为按设备自动判定（iPhone⇒标准 / iPad⇒卡片），SceneDelegate 不再读它。

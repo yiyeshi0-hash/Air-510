@@ -40,7 +40,7 @@
 #import "MinecraftResourceDownloadTask.h"
 #import "PLTaskStages.h"
 #import "AiSafetyManager.h"
-#import "utils.h"   // ★ [VER-ISOLATE-PCL] 版本隔离统一解析
+#import "utils.h"   // gameDir 统一解析
 
 /// 工具错误域与常见错误码
 static NSString * const kAiAssetToolDomain = @"AiAssetTool";
@@ -1127,8 +1127,7 @@ static BOOL aiIsLatestAlias(NSString *s) {
         NSDictionary *profiles = [PLProfiles current].profiles;
         NSDictionary *prof = [profiles isKindOfClass:[NSDictionary class]] ? profiles[profile] : nil;
         if ([prof isKindOfClass:[NSDictionary class]]) {
-            // ★ [VER-ISOLATE-PCL] 版本隔离统一解析：隔离开启时 gameDir 为
-            //   versions/<版本 id>，关闭时为 "."（实例根）——与改动前一致。
+            // gameDir 统一解析（版本隔离已删除 ⇒ 恒为 "."，显式自定义 gameDir 除外）。
             NSString *gameDir = amePCLVersionGameDirSubpath(prof, nil);
             if ([gameDir isKindOfClass:[NSString class]] && gameDir.length > 0) {
                 if ([gameDir isEqualToString:@"."]) {

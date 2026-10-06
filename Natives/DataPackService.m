@@ -136,7 +136,7 @@
         NSDictionary *profiles = PLProfiles.current.profiles;
         NSDictionary *prof = profiles[profile];
         if ([prof isKindOfClass:[NSDictionary class]]) {
-            // ★ [VER-ISOLATE-PCL] 版本隔离统一解析（绝对路径）
+            // gameDir 统一解析（绝对路径）
             NSString *gameDir = amePCLVersionGameDirAbsolute(prof, nil);
             if ([gameDir isKindOfClass:[NSString class]] && gameDir.length > 0) {
                 return gameDir;
@@ -162,7 +162,7 @@
         NSDictionary *profiles = PLProfiles.current.profiles;
         NSDictionary *prof = profiles[profile];
         if ([prof isKindOfClass:[NSDictionary class]]) {
-            // ★ [VER-ISOLATE-PCL] 版本隔离统一解析（绝对路径）
+            // gameDir 统一解析（绝对路径）
             NSString *gameDir = amePCLVersionGameDirAbsolute(prof, nil);
             if ([gameDir isKindOfClass:[NSString class]] && gameDir.length > 0) {
                 NSString *dataPacksPath = [gameDir stringByAppendingPathComponent:@"datapacks"];
@@ -197,7 +197,7 @@
         NSDictionary *profiles = PLProfiles.current.profiles;
         NSDictionary *prof = profiles[profile];
         if ([prof isKindOfClass:[NSDictionary class]]) {
-            // ★ [VER-ISOLATE-PCL] 版本隔离统一解析（绝对路径）
+            // gameDir 统一解析（绝对路径）
             NSString *gameDir = amePCLVersionGameDirAbsolute(prof, nil);
             if ([gameDir isKindOfClass:[NSString class]] && gameDir.length > 0) {
                 dataPacksPath = [gameDir stringByAppendingPathComponent:@"datapacks"];

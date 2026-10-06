@@ -137,14 +137,14 @@ static NSInteger const kSectionVersions    = 1;
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont systemFontOfSize:titleFont weight:UIFontWeightSemibold];
-    self.titleLabel.textColor = [UIColor whiteColor];
+    self.titleLabel.textColor = ([[BackgroundManager sharedManager] hasBackground] ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor whiteColor]);   // ★ [BG-CONTRAST]
     self.titleLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.titleLabel];
 
     self.subtitleLabel = [[UILabel alloc] init];
     self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.subtitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:10] weight:UIFontWeightRegular];
-    self.subtitleLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.6];
+    self.subtitleLabel.textColor = ([[BackgroundManager sharedManager] hasBackground] ? AMEForegroundColor(AMEForegroundRoleSecondary) : [[UIColor whiteColor] colorWithAlphaComponent:0.6]);   // ★ [BG-CONTRAST]
     self.subtitleLabel.numberOfLines = 0;
     self.subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
     self.subtitleLabel.adjustsFontForContentSizeCategory = NO;
@@ -183,7 +183,6 @@ static NSInteger const kSectionVersions    = 1;
 @property (nonatomic, strong) UILabel *versionLabel;
 @property (nonatomic, strong) UILabel *lastPlayedLabel;
 @property (nonatomic, strong) UIView *selectedBadge;
-@property (nonatomic, strong) UILabel *isolatedBadge;
 @property (nonatomic, strong) UIImageView *chevronView;
 @end
 
@@ -215,7 +214,7 @@ static NSInteger const kSectionVersions    = 1;
     self.nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.nameLabel.font = [UIFont systemFontOfSize:nameFont weight:UIFontWeightSemibold];
     // 规范 2.1：强制使用系统色
-    self.nameLabel.textColor = [UIColor labelColor];
+    self.nameLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.nameLabel.numberOfLines = 1;
     self.nameLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.nameLabel];
@@ -224,7 +223,7 @@ static NSInteger const kSectionVersions    = 1;
     self.versionLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.versionLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:11] weight:UIFontWeightRegular];
     // 规范 2.1：副文字用 secondaryLabelColor
-    self.versionLabel.textColor = [UIColor secondaryLabelColor];
+    self.versionLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.versionLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.versionLabel];
 
@@ -232,7 +231,7 @@ static NSInteger const kSectionVersions    = 1;
     self.lastPlayedLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.lastPlayedLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:10] weight:UIFontWeightRegular];
     // 规范 2.1：元文字用 tertiaryLabelColor
-    self.lastPlayedLabel.textColor = [UIColor tertiaryLabelColor];
+    self.lastPlayedLabel.textColor = AMEForegroundColor(AMEForegroundRoleTertiary);   // ★ [BG-CONTRAST]
     self.lastPlayedLabel.text = @"";
     self.lastPlayedLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.lastPlayedLabel];
@@ -252,18 +251,7 @@ static NSInteger const kSectionVersions    = 1;
     checkmark.tintColor = [UIColor whiteColor];
     [self.selectedBadge addSubview:checkmark];
 
-    self.isolatedBadge = [[UILabel alloc] init];
-    self.isolatedBadge.translatesAutoresizingMaskIntoConstraints = NO;
-    self.isolatedBadge.font = [UIFont systemFontOfSize:9 weight:UIFontWeightSemibold];
-    self.isolatedBadge.textColor = [UIColor whiteColor];
-    self.isolatedBadge.backgroundColor = [UIColor systemTealColor];
-    self.isolatedBadge.textAlignment = NSTextAlignmentCenter;
-    self.isolatedBadge.layer.cornerRadius = 8;
-    self.isolatedBadge.layer.cornerCurve = kCACornerCurveContinuous;
-    self.isolatedBadge.layer.masksToBounds = YES;
-    self.isolatedBadge.text = [[@" " stringByAppendingString:localize(@"i18n_str_2026", nil)] stringByAppendingString:@" "];
-    self.isolatedBadge.hidden = YES;
-    [self.contentContainer addSubview:self.isolatedBadge];
+    // ★ [NO-VI] 原版本隔离徽章（isolatedBadge）已随功能删除。
 
     // 规范 9.4：chevron 暗示可点击
     self.chevronView = [[UIImageView alloc] init];
@@ -289,10 +277,7 @@ static NSInteger const kSectionVersions    = 1;
         [self.versionLabel.trailingAnchor constraintEqualToAnchor:self.chevronView.leadingAnchor constant:-8],
         [self.lastPlayedLabel.leadingAnchor constraintEqualToAnchor:self.nameLabel.leadingAnchor],
         [self.lastPlayedLabel.topAnchor constraintEqualToAnchor:self.versionLabel.bottomAnchor constant:2],
-        [self.lastPlayedLabel.trailingAnchor constraintEqualToAnchor:self.isolatedBadge.leadingAnchor constant:-6],
-        [self.isolatedBadge.centerYAnchor constraintEqualToAnchor:self.lastPlayedLabel.centerYAnchor],
-        [self.isolatedBadge.trailingAnchor constraintEqualToAnchor:self.chevronView.leadingAnchor constant:-8],
-        [self.isolatedBadge.heightAnchor constraintEqualToConstant:16],
+        [self.lastPlayedLabel.trailingAnchor constraintEqualToAnchor:self.chevronView.leadingAnchor constant:-8],
         [self.chevronView.trailingAnchor constraintEqualToAnchor:self.contentContainer.trailingAnchor constant:-14],
         [self.chevronView.centerYAnchor constraintEqualToAnchor:self.contentContainer.centerYAnchor],
         [self.chevronView.widthAnchor constraintEqualToConstant:12],
@@ -306,12 +291,11 @@ static NSInteger const kSectionVersions    = 1;
     ]];
 }
 
-- (void)configureWithName:(NSString *)name version:(NSString *)version isSelected:(BOOL)isSelected isolated:(BOOL)isolated lastPlayed:(NSString *)lastPlayed {
+- (void)configureWithName:(NSString *)name version:(NSString *)version isSelected:(BOOL)isSelected lastPlayed:(NSString *)lastPlayed {
     self.nameLabel.text = name;
     self.versionLabel.text = version ?: localize(@"i18n_str_1052", nil);
     self.selectedBadge.hidden = !isSelected;
     self.selectedBadge.backgroundColor = accentColor();
-    self.isolatedBadge.hidden = !isolated;
     self.lastPlayedLabel.text = lastPlayed.length > 0 ? lastPlayed : @"";
 
     NSString *detectedLoader = [ModLoaderIconHelper detectLoaderFromVersionId:version];
@@ -382,7 +366,7 @@ static NSInteger const kSectionVersions    = 1;
     self.nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.nameLabel.font = [UIFont systemFontOfSize:nameFont weight:UIFontWeightSemibold];
     // 规范 2.1：系统色
-    self.nameLabel.textColor = [UIColor labelColor];
+    self.nameLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     self.nameLabel.numberOfLines = 1;
     self.nameLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.nameLabel];
@@ -391,7 +375,7 @@ static NSInteger const kSectionVersions    = 1;
     self.detailLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.detailLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:10] weight:UIFontWeightRegular];
     // 规范 2.1：副文字 secondaryLabelColor
-    self.detailLabel.textColor = [UIColor secondaryLabelColor];
+    self.detailLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     self.detailLabel.numberOfLines = 0;
     self.detailLabel.lineBreakMode = NSLineBreakByWordWrapping;
     self.detailLabel.adjustsFontForContentSizeCategory = NO;
@@ -631,14 +615,14 @@ static NSInteger const kSectionVersions    = 1;
         self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
         self.titleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:16] weight:UIFontWeightBold];
         // 规范 2.1：强制使用系统色
-        self.titleLabel.textColor = [UIColor labelColor];
+        self.titleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
         [self addSubview:self.titleLabel];
 
         self.subtitleLabel = [[UILabel alloc] init];
         self.subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
         self.subtitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:11] weight:UIFontWeightRegular];
         // 规范 2.1：副文字 secondaryLabelColor
-        self.subtitleLabel.textColor = [UIColor secondaryLabelColor];
+        self.subtitleLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
         self.subtitleLabel.numberOfLines = 0;
         self.subtitleLabel.lineBreakMode = NSLineBreakByWordWrapping;
         [self addSubview:self.subtitleLabel];
@@ -733,11 +717,6 @@ static NSInteger const kSectionVersions    = 1;
 @property (nonatomic, strong) NSArray<NSString *> *graphicsApiNames;
 @property (nonatomic, strong) NSArray<NSString *> *graphicsApiIcons;
 @property (nonatomic, strong) NSArray<NSString *> *graphicsApiDescs;
-// ★ [PERF] 版本隔离判定结果缓存：判定里含【磁盘嗅探】(fileExistsAtPath + contentsOfDirectoryAtPath)，
-//   原先在 cellForItemAtIndexPath 里逐卡实时算 ⇒ 每次卡片出队 = 主线程文件 I/O（滚动卡顿主因）。
-//   现在只在数据加载时（loadProfiles，见 viewDidLoad / 切目录 / ReloadProfileList）算一次，
-//   滚动期间只查表。判定结果与观感完全不变，只是不再每帧重算。
-@property (nonatomic, strong) NSDictionary<NSString *, NSNumber *> *isolationByProfile;
 // ★ [PERF] 实例目录大小缓存 + 在算集合：算大小是【递归遍历整个实例目录】的重活，
 //   原先每次 VMGameDirCell 出队都重新跑一遍（横向滚动 = 每秒几十次全量磁盘遍历）。
 //   现在按目录名缓存，同一目录只算一次；方向键在 loadGameDirList 时整体失效。
@@ -786,6 +765,11 @@ static NSInteger const kSectionVersions    = 1;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(handleBackgroundUIEffectChanged:)
                                                  name:@"BackgroundUIEffectChanged"
+                                               object:nil];
+    // ★ [BG-CONTRAST] 背景(图/视频)或前景模式变化 ⇒ reloadData 重取自适应前景色
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(handleBackgroundUIEffectChanged:)
+                                                 name:AMEForegroundContrastChangedNotification
                                                object:nil];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
@@ -925,7 +909,7 @@ static NSInteger const kSectionVersions    = 1;
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     titleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:18] weight:UIFontWeightBold];
-    titleLabel.textColor = [UIColor labelColor];
+    titleLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);   // ★ [BG-CONTRAST]
     titleLabel.text = localize(@"i18n_str_1056", nil);
     titleLabel.textAlignment = NSTextAlignmentCenter;
     [self.emptyStateView addSubview:titleLabel];
@@ -934,7 +918,7 @@ static NSInteger const kSectionVersions    = 1;
     UILabel *subtitleLabel = [[UILabel alloc] init];
     subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     subtitleLabel.font = [UIFont systemFontOfSize:[ScreenUtils sp:13] weight:UIFontWeightRegular];
-    subtitleLabel.textColor = [UIColor secondaryLabelColor];
+    subtitleLabel.textColor = AMEForegroundColor(AMEForegroundRoleSecondary);   // ★ [BG-CONTRAST]
     subtitleLabel.text = localize(@"i18n_str_1057", nil);
     subtitleLabel.textAlignment = NSTextAlignmentCenter;
     subtitleLabel.numberOfLines = 0;
@@ -1307,17 +1291,7 @@ static NSInteger const kSectionVersions    = 1;
     }];
     self.selectedProfile = PLProfiles.current.selectedProfileName;
 
-    // ★ [PERF] 一次性算好各 profile 的版本隔离判定（含磁盘嗅探），滚动期间只查表。
-    //   本方法在 viewDidLoad / 切游戏目录 / ReloadProfileList 时被调用 ⇒ 缓存随之刷新，
-    //   判定时机与原「每张卡片实时算」在可见范围内等价（页面打开与数据变更时都是最新的）。
-    NSMutableDictionary<NSString *, NSNumber *> *isoMap = [NSMutableDictionary dictionaryWithCapacity:self.profileList.count];
-    for (NSString *name in self.profileList) {
-        NSDictionary *prof = PLProfiles.current.profiles[name];
-        if (![prof isKindOfClass:[NSDictionary class]]) continue;
-        // 与原 cellForItemAtIndexPath 里完全同一条判定（concreteVersionId 传 nil）
-        isoMap[name] = @(amePCLVersionIsolationForProfile(prof, nil));
-    }
-    self.isolationByProfile = isoMap;
+    // ★ [NO-VI] 版本隔离判定缓存（isolationByProfile）已随功能删除。
 }
 
 /// 加载游戏目录（实例）列表
@@ -1420,14 +1394,10 @@ static NSInteger const kSectionVersions    = 1;
         NSDictionary *profile = PLProfiles.current.profiles[profileName];
         NSString *versionId = profile[@"lastVersionId"] ?: localize(@"i18n_str_1052", nil);
         BOOL isSelected = [profileName isEqualToString:self.selectedProfile];
-        // ★ [VI-SWITCH-UI] 隔离态以「版本隔离」统一 resolver 为准（显式 versionIsolation / 自动判定 /
-        //   全局默认），不再只看 gameDir —— 新的隔离开关不改写 gameDir，只看它会把已隔离的版本漏报成共享。
-        // ★ [PERF] 该判定含磁盘嗅探，已改为在 loadProfiles 里一次算好（见 isolationByProfile），
-        //   这里只查表 —— 滚动期间不再做任何文件 I/O。
-        BOOL isolated = [self.isolationByProfile[profileName] boolValue];
+        // ★ [NO-VI] 版本隔离徽章判定已删除。
         NSString *lastPlayed = [self formatLastPlayed:profile[@"lastPlayed"]];
 
-        [cell configureWithName:profileName version:versionId isSelected:isSelected isolated:isolated lastPlayed:lastPlayed];
+        [cell configureWithName:profileName version:versionId isSelected:isSelected lastPlayed:lastPlayed];
         return cell;
     }
 }

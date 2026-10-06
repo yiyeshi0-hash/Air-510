@@ -18,12 +18,21 @@ static NSString * const kBackgroundUIOpacityKey = @"background_ui_opacity";
 static NSString * const kBackgroundBlurIntensityKey = @"background_blur_intensity";
 static NSString * const kGlassRimEnabledKey  = @"background_glass_rim_enabled";   // ★ [RIM-UI]
 static NSString * const kGlassRimStrengthKey = @"background_glass_rim_strength";  // ★ [RIM-UI]
+static NSString * const kForegroundModeKey   = @"background_foreground_mode";     // ★ [BG-CONTRAST]
 static NSString * const kBackgroundsFolder = @"backgrounds";
 static const NSInteger kGlobalBackgroundTag = 99999;
 static const NSInteger kBackgroundImageTag = 99998;
 static const NSInteger kBackgroundBlurTag = 99997;
 static const NSInteger kBackgroundDimTag = 99996;
 static const NSInteger kDefaultBackgroundTag = 99995;
+
+// ★ [BG-CONTRAST] 背景/前景模式变化广播
+NSNotificationName const AMEForegroundContrastChangedNotification = @"AMEForegroundContrastChanged";
+
+// ★ [BG-CONTRAST] 亮度判定:WCAG 相对对比度交叉点
+//   contrast(白字) > contrast(黑字) ⇔ (1.05)/(L+0.05) > (L+0.05)/(0.05) ⇔ L < 0.179
+//   ⇒ L < 0.179 用浅色前景(白字);否则用深色前景(深字)。纯白图 L≈1 ⇒ 深字;纯黑图 L≈0 ⇒ 白字。
+static const CGFloat kAMELumaLightForegroundCeiling = 0.179f;
 // ★ [GLASSUI] 合并同一 runloop 内的多次玻璃重刷(强度滑块连续拖动时避免反复遍历视图树)
 static BOOL gAmeGlassRimApplyScheduled = NO;
 
@@ -167,6 +176,17 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 @property (nonatomic, strong, readwrite, nullable) UIView *globalBackgroundContainer;
 // ★ [E3] 记住默认渐变宿主(removeGlobalBackground 的 currentWindow 会被置 nil,需单独持弱引用清理)
 @property (nonatomic, weak) UIView *ameDefaultGradientHost;
+
+// ★ [BG-CONTRAST] 背景代表亮度缓存(按 路径 + mtime 复用;视频首帧异步补算)
+@property (nonatomic, assign) CGFloat ameCachedLuma;         // 0…1;-1 = 未算出
+@property (nonatomic, assign) CGFloat ameLumaMin;            // 区块最小亮度(诊断)
+@property (nonatomic, assign) CGFloat ameLumaMax;            // 区块最大亮度(诊断)
+@property (nonatomic, copy)   NSString *ameLumaPath;
+@property (nonatomic, assign) NSTimeInterval ameLumaMtime;
+@property (nonatomic, assign) BOOL ameLumaComputed;
+@property (nonatomic, assign) BOOL ameVideoLumaPending;
+- (void)ame_storeLuma:(CGFloat)luma path:(NSString *)path mtime:(NSTimeInterval)mtime;
+- (void)ame_invalidateForegroundContrast;
 // ★ [E3] 私有:把默认渐变背景挂到宿主(window / splitVC.view)
 - (void)ame_applyDefaultGradientToHost:(UIView *)host;
 // ★ [GLASSUI] 私有:玻璃高光设置即时生效(设置页接入用)
@@ -327,6 +347,12 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     id ameRimSObj = [defaults objectForKey:kGlassRimStrengthKey];
     _glassRimStrength = ameRimSObj ? [defaults floatForKey:kGlassRimStrengthKey] : 1.0;
     if (_glassRimStrength < 0.0 || _glassRimStrength > 1.0) _glassRimStrength = 1.0;
+    // ★ [BG-CONTRAST] 自适应前景色模式(键不存在 ⇒ 自动)
+    id ameFgObj = [defaults objectForKey:kForegroundModeKey];
+    _foregroundMode = ameFgObj ? (AMEForegroundMode)[defaults integerForKey:kForegroundModeKey] : AMEForegroundModeAuto;
+    if (_foregroundMode < AMEForegroundModeAuto || _foregroundMode > AMEForegroundModeForceLight) {
+        _foregroundMode = AMEForegroundModeAuto;
+    }
     // ★ [GLASS-STYLE] 界面风格:解析实际生效风格(单一真相源),并按风格收敛纯代码玻璃强度。
     //   原生风格(iOS<26 一律,iOS>=26 用户可选)⇒ 强度强制 0(rim 助手内部也会短路,这里是双保险)。
     AMEGlassStyleLogResolvedOnce();
@@ -349,6 +375,7 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     [defaults setFloat:self.blurIntensity forKey:kBackgroundBlurIntensityKey];
     [defaults setBool:self.glassRimEnabled forKey:kGlassRimEnabledKey];      // ★ [RIM-UI]
     [defaults setFloat:self.glassRimStrength forKey:kGlassRimStrengthKey];   // ★ [RIM-UI]
+    [defaults setInteger:self.foregroundMode forKey:kForegroundModeKey];     // ★ [BG-CONTRAST]
     [defaults synchronize];
 }
 
@@ -365,6 +392,18 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 - (void)setBlurIntensity:(CGFloat)blurIntensity {
     _blurIntensity = MAX(0.0, MIN(1.0, blurIntensity));
     [self saveUISettings];
+}
+
+// ★ [BG-CONTRAST] 前景色模式:夹紧 + 持久化 + 广播(各页重刷自适应前景)
+- (void)setForegroundMode:(AMEForegroundMode)foregroundMode {
+    if (foregroundMode < AMEForegroundModeAuto || foregroundMode > AMEForegroundModeForceLight) {
+        foregroundMode = AMEForegroundModeAuto;
+    }
+    _foregroundMode = foregroundMode;
+    [self saveUISettings];
+    [[NSNotificationCenter defaultCenter] postNotificationName:AMEForegroundContrastChangedNotification object:nil];
+    NSLog(@"[bg-contrast] 前景模式 = %ld (0=自动,1=强制深,2=强制浅) · %@",
+          (long)_foregroundMode, [self foregroundDiagnostics]);
 }
 
 #pragma mark - ★ [GLASSUI] 玻璃高光 开关 / 强度(设置页接入:夹紧 + 持久化 + 即时生效)
@@ -737,6 +776,28 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     //   每次应用都【无条件先摘一次】,保证「原生 / 关高光」下行上没有任何高光残留
     //   (用户实测:从玻璃切到原生后,设置页会残留一点小高光)。
     AmeDetachGlassRim(cell);
+
+    // ★ [GLASS-BG] 无自定义背景 ⇒ 列表行给原生实底(不再叠"无底毛玻璃"),避免"整片列表透明"。
+    //   (有壁纸时保持下面的毛玻璃/半透明,壁纸透出。)
+    if (![self hasBackground]) {
+        for (UIView *subview in [cell.contentView.superview.subviews copy]) {
+            if ([subview isKindOfClass:[UIVisualEffectView class]]) {
+                [subview removeFromSuperview];
+            }
+        }
+        CGFloat ameRowRadius = (cell.layer.cornerRadius > 0.0) ? cell.layer.cornerRadius : 12.0;
+        cell.backgroundView = nil;
+        cell.backgroundColor = [UIColor clearColor];
+        cell.layer.cornerRadius = ameRowRadius;
+        cell.layer.cornerCurve = kCACornerCurveContinuous;
+        cell.layer.masksToBounds = YES;
+        cell.contentView.backgroundColor = [UIColor secondarySystemBackgroundColor];   // ★ [GLASS-BG] 行实底
+        cell.contentView.layer.cornerRadius = ameRowRadius;
+        cell.contentView.layer.cornerCurve = kCACornerCurveContinuous;
+        cell.contentView.layer.masksToBounds = YES;
+        return;
+    }
+
     if (self.uiEffect == BackgroundUIEffectBlur) {
         // 毛玻璃效果 - use UIBlurEffect on cell background
         if (@available(iOS 13.0, *)) {
@@ -1016,6 +1077,32 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 - (void)applyEffectToView:(UIView *)view {
     if (!view) return;
 
+    // ★ [GLASS-BG] 无自定义背景 ⇒ 原生实底(对照上游 Prisma 的"原生外观"口径)。
+    //   旧管线无论有无壁纸都铺一层【无底的毛玻璃】:
+    //     · applyEffectToView: 把宿主 `backgroundColor = clearColor`,只挂 UIVisualEffectView;
+    //     · GLASS-LIQUID 之后 `AmeApplyGlassFillForCurrentStyle` 在系统材质路径又【不给任何填充】;
+    //     · 无壁纸时系统材质(ThinMaterial / iOS26 UIGlassEffect Regular)本身极通透 ⇒
+    //       宿主下方(默认渐变底 / 纯色)整片透出 ⇒ 用户报的「很多背景都是透明的 / 切回原生还透明」。
+    //   修复:没有壁纸可透出时,面板/卡片/整页一律给【不透明系统底】,不再叠"无底的毛玻璃"。
+    //   (有壁纸时保持下面的毛玻璃/半透明,壁纸正常透出 —— 与上游同口径。)
+    if (![self hasBackground]) {
+        NSLog(@"[glass] applyEffectToView: [GLASS-BG] 无自定义背景 ⇒ 原生实底 on %@ (radius=%.1f)",
+              NSStringFromClass(view.class), (double)view.layer.cornerRadius);
+        for (UIView *subview in [view.subviews copy]) {
+            if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == kBackgroundBlurTag) {
+                [subview removeFromSuperview];
+            }
+        }
+        AmeDetachGlassRim(view);
+        CGFloat ameSolidRadius = view.layer.cornerRadius;
+        if (ameSolidRadius > 0.0) {
+            view.backgroundColor = [UIColor secondarySystemBackgroundColor];   // 卡片 / 面板:原生卡面实底
+        } else {
+            view.backgroundColor = [UIColor systemBackgroundColor];           // 整页:原生页面底色
+        }
+        return;
+    }
+
     if (self.uiEffect == BackgroundUIEffectBlur) {
         // ★ [GLASS-LIQUID] 明确区分两条路:系统材质(默认)vs 自绘叠加(仅用户显式打开)。
         //   旧日志 "BLUR path" 会被误读成"还在纯代码画玻璃" ⇒ 按当前风格如实汇报。
@@ -1125,6 +1212,21 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
         cell.contentView.layer.cornerRadius = ameEffectiveRadius;
         cell.contentView.layer.cornerCurve = kCACornerCurveContinuous;   // ★ [CORNER-FIX] 与系统卡片一致
         cell.contentView.layer.masksToBounds = YES;
+    }
+
+    // ★ [GLASS-BG] 无自定义背景 ⇒ 集合卡片给原生实底(不再叠"无底毛玻璃"),
+    //   根治主页便当盒卡 / 实例卡 / 新闻卡 / 公告卡在无壁纸时整片透明。
+    if (![self hasBackground]) {
+        NSLog(@"[glass] applyEffectToCollectionViewCell: [GLASS-BG] 无自定义背景 ⇒ 卡片实底 (radius=%.1f)",
+              (double)ameEffectiveRadius);
+        for (UIView *subview in [cell.contentView.subviews copy]) {
+            if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == kBackgroundBlurTag) {
+                [subview removeFromSuperview];
+            }
+        }
+        cell.backgroundColor = [UIColor clearColor];
+        cell.contentView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        return;
     }
 
     if (self.uiEffect == BackgroundUIEffectBlur) {
@@ -1329,7 +1431,8 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
                 } else if (self.currentWindow) {
                     [self applyBackgroundToWindow:self.currentWindow];
                 }
-                
+                // ★ [BG-CONTRAST] 背景变了 ⇒ 作废亮度缓存 + 广播(各页重刷自适应前景)
+                [self ame_invalidateForegroundContrast];
                 if (completion) completion(YES, nil);
             });
         } else {
@@ -1386,7 +1489,8 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
                 } else if (self.currentWindow) {
                     [self applyBackgroundToWindow:self.currentWindow];
                 }
-                
+                // ★ [BG-CONTRAST] 背景变了 ⇒ 作废亮度缓存 + 广播(各页重刷自适应前景)
+                [self ame_invalidateForegroundContrast];
                 if (completion) completion(YES, nil);
             });
         } else {
@@ -1401,6 +1505,8 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     [self clearBackgroundInternal];
     [self removeGlobalBackground];
     [self saveBackgroundSettings];
+    // ★ [BG-CONTRAST] 清背景 ⇒ 作废亮度缓存 + 广播(前景回到语义色 = 与改造前一致)
+    [self ame_invalidateForegroundContrast];
 }
 
 - (void)clearBackgroundInternal {
@@ -1436,6 +1542,197 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     }
     return nil;
 }
+
+#pragma mark - ★ [BG-CONTRAST] 自适应前景色 / 可读性(单一真相源)
+
+// 8×8 区块 → 每块 Rec.709 平均亮度 → 取【中位数】。中位数对"一颗亮 logo / 一条暗边"这类
+// 局部极值不敏感,比"整图平均"更稳 ⇒ 不会出现同一页"半亮半不亮"的乱态。min/max 仅作诊断。
+- (CGFloat)ame_luminanceFromImage:(UIImage *)image {
+    if (!image) return -1.0;
+    CGImageRef cg = image.CGImage;
+    if (cg == NULL) return -1.0;
+    const NSInteger N = 8;
+    const size_t bytesPerRow = (size_t)N * 4;
+    unsigned char *buf = (unsigned char *)calloc((size_t)N * (size_t)N * 4, 1);
+    if (buf == NULL) return -1.0;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, N, N, 8, bytesPerRow, cs,
+                                             kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (ctx == NULL) { free(buf); return -1.0; }
+    // 先铺黑:透明像素按黑算(与"看不清"一致),避免被当白
+    CGContextSetFillColorWithColor(ctx, [UIColor blackColor].CGColor);
+    CGContextFillRect(ctx, CGRectMake(0, 0, N, N));
+    CGContextDrawImage(ctx, CGRectMake(0, 0, N, N), cg);
+    CGContextRelease(ctx);
+
+    CGFloat lumas[64];
+    const NSInteger count = N * N;
+    for (NSInteger i = 0; i < count; i++) {
+        CGFloat r = buf[i * 4 + 0] / 255.0;
+        CGFloat g = buf[i * 4 + 1] / 255.0;
+        CGFloat b = buf[i * 4 + 2] / 255.0;
+        lumas[i] = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    }
+    free(buf);
+
+    for (NSInteger i = 1; i < count; i++) {          // 插入排序(count=64,可忽略)
+        CGFloat key = lumas[i];
+        NSInteger j = i - 1;
+        while (j >= 0 && lumas[j] > key) { lumas[j + 1] = lumas[j]; j--; }
+        lumas[j + 1] = key;
+    }
+    self.ameLumaMin = lumas[0];
+    self.ameLumaMax = lumas[count - 1];
+    return lumas[count / 2];
+}
+
+- (void)ame_storeLuma:(CGFloat)luma path:(NSString *)path mtime:(NSTimeInterval)mtime {
+    self.ameCachedLuma = luma;
+    self.ameLumaPath = path;
+    self.ameLumaMtime = mtime;
+    self.ameLumaComputed = YES;
+}
+
+// 背景变化 ⇒ 丢掉缓存并把"要重刷前景色"广播出去(各页 observer 重取 AMEForegroundColor)
+- (void)ame_invalidateForegroundContrast {
+    self.ameLumaComputed = NO;
+    self.ameCachedLuma = -1.0;
+    self.ameLumaPath = nil;
+    self.ameVideoLumaPending = NO;
+    (void)[self representativeBackgroundLuminance];   // 立即重算一次(图片同步;视频转异步)
+    NSLog(@"[bg-contrast] 背景已刷新 · %@", [self foregroundDiagnostics]);
+    [[NSNotificationCenter defaultCenter] postNotificationName:AMEForegroundContrastChangedNotification object:nil];
+}
+
+// 视频:首帧异步取一次(不阻塞主线程);取到前返回 -1(未知 ⇒ 走现状语义色,绝不会闪成错色)
+- (void)ame_computeVideoLumaAsync:(NSString *)path mtime:(NSTimeInterval)mtime {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        AVAsset *asset = [AVAsset assetWithURL:[NSURL fileURLWithPath:path]];
+        AVAssetImageGenerator *gen = [[AVAssetImageGenerator alloc] initWithAsset:asset];
+        gen.appliesPreferredTrackTransform = YES;
+        gen.maximumSize = CGSizeMake(64, 64);
+        NSError *err = nil;
+        CGImageRef cg = [gen copyCGImageAtTime:CMTimeMakeWithSeconds(0.5, 600) actualTime:NULL error:&err];
+        CGFloat luma = -1.0;
+        if (cg != NULL) {
+            UIImage *img = [UIImage imageWithCGImage:cg];
+            CGImageRelease(cg);
+            luma = [self ame_luminanceFromImage:img];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.ameVideoLumaPending = NO;
+            if (luma >= 0.0) {
+                [self ame_storeLuma:luma path:path mtime:mtime];
+                [[NSNotificationCenter defaultCenter] postNotificationName:AMEForegroundContrastChangedNotification object:nil];
+                NSLog(@"[bg-contrast] 视频首帧已取样 · %@", [self foregroundDiagnostics]);
+            } else {
+                NSLog(@"[bg-contrast] 视频首帧取样失败(保持语义色):%@", err.localizedDescription ?: @"unknown");
+            }
+        });
+    });
+}
+
+- (CGFloat)representativeBackgroundLuminance {
+    if (![self hasBackground]) return -1.0;              // 无自定义背景 ⇒ 未知
+    NSString *path = self.currentBackgroundPath;
+    if (path.length == 0) return -1.0;
+
+    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+    NSTimeInterval mtime = [attrs fileModificationDate].timeIntervalSince1970;
+    if (self.ameLumaComputed &&
+        [self.ameLumaPath isEqualToString:path] &&
+        fabs(self.ameLumaMtime - mtime) < 0.001) {
+        return self.ameCachedLuma;                        // 命中缓存
+    }
+
+    if (self.currentType == BackgroundTypeImage) {
+        UIImage *img = [UIImage imageWithContentsOfFile:path];
+        CGFloat luma = [self ame_luminanceFromImage:img];
+        if (luma < 0.0) return -1.0;
+        [self ame_storeLuma:luma path:path mtime:mtime];
+        return luma;
+    }
+    if (self.currentType == BackgroundTypeVideo) {
+        if (!self.ameVideoLumaPending) {
+            self.ameVideoLumaPending = YES;
+            [self ame_computeVideoLumaAsync:path mtime:mtime];
+        }
+        return -1.0;                                      // 未就绪 ⇒ 语义色(与现状一致)
+    }
+    return -1.0;
+}
+
+// 无自定义背景 / 亮度未知时用的语义色(与改造前逐像素一致)
+- (UIColor *)ame_semanticColorForRole:(AMEForegroundRole)role {
+    switch (role) {
+        case AMEForegroundRolePrimary:    return [UIColor labelColor];
+        case AMEForegroundRoleSecondary:  return [UIColor secondaryLabelColor];
+        case AMEForegroundRoleTertiary:   return [UIColor tertiaryLabelColor];
+        case AMEForegroundRoleQuaternary: return [UIColor quaternaryLabelColor];
+    }
+    return [UIColor labelColor];
+}
+
+- (BOOL)backgroundIsLight {
+    if (![self hasBackground]) return NO;
+    if (self.foregroundMode == AMEForegroundModeForceDark)  return YES;   // 强制深字 ⇒ 当作亮底
+    if (self.foregroundMode == AMEForegroundModeForceLight) return NO;    // 强制白字 ⇒ 当作暗底
+    CGFloat luma = [self representativeBackgroundLuminance];
+    if (luma < 0.0) return NO;                                            // 未知 ⇒ 不改现状
+    return (luma >= kAMELumaLightForegroundCeiling);                      // 亮底 ⇒ 需要深字
+}
+
+- (UIColor *)foregroundColorForRole:(AMEForegroundRole)role {
+    // ★ 兜底:无自定义背景(默认渐变/纯色)⇒ 语义色,观感与改造前一致
+    if (![self hasBackground]) return [self ame_semanticColorForRole:role];
+    CGFloat luma = [self representativeBackgroundLuminance];
+    if (luma < 0.0 && self.foregroundMode == AMEForegroundModeAuto) {
+        return [self ame_semanticColorForRole:role];       // 亮度未知(视频未就绪)⇒ 语义色
+    }
+
+    BOOL darkForeground = [self backgroundIsLight];        // 亮底 ⇒ 深字
+    if (darkForeground) {
+        // 深字(浅底):比系统浅色模式略提 alpha,照片类底更稳
+        switch (role) {
+            case AMEForegroundRolePrimary:    return [UIColor colorWithWhite:0.0 alpha:1.00];
+            case AMEForegroundRoleSecondary:  return [UIColor colorWithWhite:0.0 alpha:0.62];
+            case AMEForegroundRoleTertiary:   return [UIColor colorWithWhite:0.0 alpha:0.38];
+            case AMEForegroundRoleQuaternary: return [UIColor colorWithWhite:0.0 alpha:0.24];
+        }
+    } else {
+        // 白字(暗底):比系统深色模式略提 alpha(0.6→0.65 / 0.3→0.40 / 0.18→0.25)
+        switch (role) {
+            case AMEForegroundRolePrimary:    return [UIColor colorWithWhite:1.0 alpha:1.00];
+            case AMEForegroundRoleSecondary:  return [UIColor colorWithWhite:1.0 alpha:0.65];
+            case AMEForegroundRoleTertiary:   return [UIColor colorWithWhite:1.0 alpha:0.40];
+            case AMEForegroundRoleQuaternary: return [UIColor colorWithWhite:1.0 alpha:0.25];
+        }
+    }
+    return [self ame_semanticColorForRole:role];
+}
+
+- (UIColor *)foregroundShadowColorForRole:(AMEForegroundRole)role {
+    (void)role;
+    if (![self hasBackground]) return nil;
+    if ([self representativeBackgroundLuminance] < 0.0 && self.foregroundMode == AMEForegroundModeAuto) return nil;
+    // 浅色前景 ⇒ 深色投影;深色前景 ⇒ 浅色高光(复杂/中等亮度背景下保住可读性)
+    return [self backgroundIsLight] ? [UIColor colorWithWhite:1.0 alpha:0.55]
+                                    : [UIColor colorWithWhite:0.0 alpha:0.35];
+}
+
+- (NSString *)foregroundDiagnostics {
+    CGFloat luma = [self representativeBackgroundLuminance];
+    NSString *lumaStr = (luma < 0.0) ? @"未知" : [NSString stringWithFormat:@"%.3f", luma];
+    NSString *modeStr = (self.foregroundMode == AMEForegroundModeForceDark) ? @"强制深"
+                      : (self.foregroundMode == AMEForegroundModeForceLight) ? @"强制浅" : @"自动";
+    NSString *fgStr = [self backgroundIsLight] ? @"深色前景" : @"浅色前景";
+    return [NSString stringWithFormat:@"hasBg=%d type=%ld 代表亮度=%@(区块 min=%.2f max=%.2f) 模式=%@ ⇒ %@",
+            (int)[self hasBackground], (long)self.currentType, lumaStr,
+            self.ameLumaMin, self.ameLumaMax, modeStr, fgStr];
+}
+
+#pragma mark - ★ [BG-CONTRAST] 全局便捷函数(定义放在文件末尾 @end 之后)
 
 
 // ★ [UI-B] 递归重刷玻璃高光(frame 不随 autoresize 变化,必须在布局后重设)
@@ -1545,3 +1842,13 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     });
 }
 @end
+
+#pragma mark - ★ [BG-CONTRAST] 全局便捷函数(文件作用域,供各 UI 文件直接调用)
+
+UIColor *AMEForegroundColor(AMEForegroundRole role) {
+    return [[BackgroundManager sharedManager] foregroundColorForRole:role];
+}
+
+UIColor *AMEForegroundShadowColor(void) {
+    return [[BackgroundManager sharedManager] foregroundShadowColorForRole:AMEForegroundRolePrimary];
+}

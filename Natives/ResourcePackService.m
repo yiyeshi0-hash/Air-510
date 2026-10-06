@@ -135,9 +135,7 @@
     NSString *profile = profileName.length ? profileName : @"default";
     NSFileManager *fm = [NSFileManager defaultManager];
 
-    // ★ [VI-SWITCH-UI] 统一走「版本隔离」resolver（关 = 共享根 POJAV_GAME_DIR；开 = versions/<版本 id>）。
-    //   原先自拼 prof[@"gameDir"]：隔离不改写 gameDir（恒为 "."），且相对路径会基于 cwd 解析
-    //   ⇒ 开了隔离仍在读共享目录，用户看到「隔离了但资源包还是老的那批」。
+    // ★ [NO-VI] 统一走 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根 POJAV_GAME_DIR），不再自拼 profile gameDir。
     NSDictionary *prof = nil;
     @try {
         prof = PLProfiles.current.profiles[profile];
@@ -160,7 +158,7 @@
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *resourcePacksPath = nil;
 
-    // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>），不再自拼 gameDir。
+    // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根），不再自拼 gameDir。
     NSDictionary *prof = nil;
     @try {
         prof = PLProfiles.current.profiles[profile];
@@ -308,7 +306,7 @@
     if (!resourcePacksFolder) {
         // 目录不存在时尝试创建
         NSString *profile = profileName.length ? profileName : @"default";
-        // ★ [VI-SWITCH-UI] 统一 resolver（关 = 共享根；开 = versions/<版本 id>），不再自拼 gameDir。
+        // ★ [NO-VI] 统一 gameDir 解析（版本隔离已删除 ⇒ 恒为共享根），不再自拼 gameDir。
         NSDictionary *prof = nil;
         @try {
             prof = PLProfiles.current.profiles[profile];

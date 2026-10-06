@@ -6,7 +6,6 @@
 #import "PLProfiles.h"
 #import "ios_uikit_bridge.h"
 #import "utils.h"
-#import "VersionDataMigration.h"   // ★ [VER-ISOLATE-MIGRATE] 版本隔离数据迁移引擎
 #import "BackgroundManager.h"
 
 @interface LauncherProfileEditorViewController()<UIPickerViewDataSource, UIPickerViewDelegate>
@@ -18,10 +17,6 @@
 @property(nonatomic) UIPickerView* versionPickerView;
 @property(nonatomic) UIToolbar* versionPickerToolbar;
 @property(nonatomic) int versionSelectedAt;
-// ★ [VER-ISOLATE-MIGRATE] 版本隔离数据迁移（逐实例、复制式、默认不自动搬）
-- (void)actionMigrateVersionData;
-- (void)runMigrateItems:(NSArray<NSString *> *)names removeSource:(BOOL)removeSource;
-- (NSString *)ameHumanBytes:(unsigned long long)bytes;
 @end
 
 @implementation LauncherProfileEditorViewController
@@ -45,15 +40,6 @@
     // Setup preference getter and setter
     __weak LauncherProfileEditorViewController *weakSelf = self;
     self.getPreference = ^id(NSString *section, NSString *key){
-        // ★ [VER-ISOLATE-PCL] 版本隔离：未显式设置时展示"解析后的实际生效值"
-        // （与 PCL 设置页一致——显示跟随全局/自动判定的结果），用户切换时才写入显式值。
-        if ([key isEqualToString:@"versionIsolation"]) {
-            id raw = weakSelf.profile[key];
-            if (raw) return [raw boolValue] ? @"1" : @"0";
-            id vid = weakSelf.profile[@"lastVersionId"];
-            return amePCLVersionIsolationForProfile(weakSelf.profile,
-                       [vid isKindOfClass:NSString.class] ? (NSString *)vid : nil) ? @"1" : @"0";
-        }
         id rawValue = weakSelf.profile[key];
         // 兼容 NSDictionary 类型的 javaVersion（旧版直装器写入）
         if ([rawValue isKindOfClass:[NSDictionary class]]) {
@@ -137,36 +123,7 @@
               @"type": self.typeTextField,
               @"placeholder": [NSString stringWithFormat:@". -> /Documents/instances/%@", getPrefObject(@"general.game_directory")]
             },
-            // ★ [VER-ISOLATE-PCL] 版本隔离开关（对齐 PCL-CE 实例设置页的「实例隔离」）：
-            // 开 = 该版本的 mods/config/saves/... 独立落 <实例根>/versions/<版本 id>/；
-            // 关 = 与实例内其它版本共享（现状）。值以字符串存 profile（"1"/"0"），
-            // 与 profile 内其它键（NSDictionary<NSString*,NSString*>）类型一致。
-            @{@"key": @"versionIsolation",
-              @"icon": @"square.on.square.dashed",
-              @"title": @"preference.profile.title.version_isolation",
-              @"type": self.typeSwitch,
-              @"customSwitchValue": @[@"0", @"1"],
-              @"hasDetail": @YES,
-              // ★ [VER-ISOLATE-MIGRATE] 切换隔离会改变下方「迁移版本数据」行是否可用，
-              // 故请求整表刷新以重算 enableCondition（复用既有机制，未改视觉）。
-              @"requestReload": @YES
-            },
-            // ★ [VER-ISOLATE-MIGRATE] 版本隔离「数据迁移」入口（逐实例、复制式、默认不自动搬）：
-            // 仅在「版本隔离」已开启时可用（enableCondition）。点击后列出将搬运的目录/文件
-            // 与体量，用户确认才复制；只复制不删除源；同名文件默认跳过并保留两边。
-            // 复用既有 typeButton 行样式，未改视觉。
-            @{@"key": @"migrate_version_data",
-              @"icon": @"arrow.right.square.on.square",
-              @"title": @"preference.profile.title.migrate_version_data",
-              @"type": self.typeButton,
-              @"hasDetail": @YES,
-              @"enableCondition": ^BOOL{
-                  id vid = weakSelf.profile[@"lastVersionId"];
-                  return amePCLVersionIsolationForProfile(weakSelf.profile,
-                             [vid isKindOfClass:NSString.class] ? (NSString *)vid : nil);
-              },
-              @"action": ^void(){ [weakSelf actionMigrateVersionData]; }
-            },
+            // ★ [NO-VI] 原「版本隔离」开关行与「迁移版本数据」入口行已随功能删除。
             // Video and renderer settings
             @{@"key": @"renderer",
               @"icon": @"cpu",
@@ -299,130 +256,10 @@
     [self actionClose];
 }
 
-#pragma mark ★ [VER-ISOLATE-MIGRATE] 版本隔离数据迁移
+// ★ [NO-VI] 版本隔离「数据迁移」相关方法已随功能整体删除：
+//   ameHumanBytes: / ameMigrationVersionId / actionMigrateVersionData / runMigrateItems:removeSource:
+//   （本页为已下线页面，无实例化点；此段删除后不再引用 ameVDM* 迁移引擎与隔离 resolver）。
 
-- (NSString *)ameHumanBytes:(unsigned long long)bytes {
-    return [NSByteCountFormatter stringFromByteCount:(long long)bytes
-                                           countStyle:NSByteCountFormatterCountStyleFile];
-}
-
-- (NSString *)ameMigrationVersionId {
-    id vid = self.profile[@"lastVersionId"];
-    return [vid isKindOfClass:NSString.class] ? (NSString *)vid : nil;
-}
-
-/// 迁移入口（实例编辑页「迁移版本数据」行）。仅列出将搬运的目录/文件与体量，
-/// 逐项可选、用户确认才复制；默认只复制、不删源。不动渲染产物 / 不改 UI 视觉。
-- (void)actionMigrateVersionData {
-    NSString *title = localize(@"preference.profile.title.migrate_version_data", nil);
-    NSString *vid = [self ameMigrationVersionId];
-
-    // 未开启隔离 ⇒ 无隔离目标，先提示去开开关（不偷偷替用户开）。
-    if (!amePCLVersionIsolationForProfile(self.profile, vid)) {
-        showDialog(title, localize(@"preference.migrate.need_isolation", nil));
-        return;
-    }
-    // 源 = resolver 在「关隔离」时给出的 gameDir（用户当前实际在用的那个目录）；
-    // 目标 = resolver 在「开隔离」时给出的目录。两端共用同一 resolver，不自拼路径。
-    NSString *src = amePCLSharedGameDirForProfile(self.profile, vid);
-    NSString *dst = amePCLVersionGameDirAbsolute(self.profile, vid);
-    if (src.length == 0 || dst.length == 0 || [src isEqualToString:dst]) {
-        showDialog(title, localize(@"preference.migrate.no_target", nil));
-        return;
-    }
-
-    ameVDMCleanupStaleTemps(dst, ameVDMDefaultItemNames());   // 清上次中断残留
-    NSArray<NSDictionary *> *plan = ameVDMPlan(src, dst, ameVDMDefaultItemNames());
-    if (plan.count == 0) {
-        showDialog(title, localize(@"preference.migrate.nothing", nil));
-        return;
-    }
-
-    NSUInteger totalFiles = 0;
-    unsigned long long totalBytes = 0;
-    for (NSDictionary *it in plan) {
-        totalFiles += [it[@"files"] unsignedIntegerValue];
-        totalBytes += [it[@"bytes"] unsignedLongLongValue];
-    }
-    NSString *msg = [NSString stringWithFormat:localize(@"preference.migrate.confirm.message", nil),
-                     (unsigned long)plan.count, (unsigned long)totalFiles,
-                     [self ameHumanBytes:totalBytes], dst];
-
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:title message:msg
-                                                           preferredStyle:UIAlertControllerStyleActionSheet];
-    __weak LauncherProfileEditorViewController *weakSelf = self;
-    // 逐项动作：每项都显示体量（文件数 / 字节），可单独迁移。
-    for (NSDictionary *it in plan) {
-        NSString *rowTitle = [NSString stringWithFormat:localize(@"preference.migrate.item.title", nil),
-                              it[@"name"], (unsigned long)[it[@"files"] unsignedIntegerValue],
-                              [self ameHumanBytes:[it[@"bytes"] unsignedLongLongValue]]];
-        [sheet addAction:[UIAlertAction actionWithTitle:rowTitle style:UIAlertActionStyleDefault
-                                               handler:^(UIAlertAction *a){
-            [weakSelf runMigrateItems:@[it[@"name"]] removeSource:NO];
-        }]];
-    }
-    NSMutableArray<NSString *> *allNames = [NSMutableArray array];
-    for (NSDictionary *it in plan) [allNames addObject:it[@"name"]];
-    [sheet addAction:[UIAlertAction actionWithTitle:localize(@"preference.migrate.all", nil)
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(UIAlertAction *a){
-        [weakSelf runMigrateItems:allNames removeSource:NO];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
-                                              style:UIAlertActionStyleCancel handler:nil]];
-    sheet.popoverPresentationController.sourceView = self.tableView;
-    sheet.popoverPresentationController.sourceRect = self.tableView.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
-}
-
-/// 执行迁移并逐项报告；仅在「已复制且无冲突」时提供 destructive 的"删除源"后续动作。
-- (void)runMigrateItems:(NSArray<NSString *> *)names removeSource:(BOOL)removeSource {
-    NSString *vid = [self ameMigrationVersionId];
-    NSString *src = amePCLSharedGameDirForProfile(self.profile, vid);   // resolver 的「关隔离」值
-    NSString *dst = amePCLVersionGameDirAbsolute(self.profile, vid);    // resolver 的「开隔离」值
-    NSDictionary *opts = @{@"conflictPolicy": @(ameVDMConflictSkip), @"removeSource": @(removeSource)};
-    NSDictionary *rep = ameVDMExecute(src, dst, names, opts);
-
-    NSUInteger copied = 0, identical = 0, conflicts = 0, renamed = 0;
-    NSMutableString *body = [NSMutableString string];
-    NSMutableArray<NSString *> *issues = [NSMutableArray array];
-    for (NSDictionary *r in rep[@"items"]) {
-        copied    += [r[@"copied"] unsignedIntegerValue];
-        identical += [r[@"identical"] unsignedIntegerValue];
-        conflicts += [r[@"conflict"] unsignedIntegerValue];
-        renamed   += [r[@"renamed"] unsignedIntegerValue];
-        [body appendFormat:@"%@\n", [NSString stringWithFormat:localize(@"preference.migrate.line", nil),
-            r[@"name"], (unsigned long)[r[@"copied"] unsignedIntegerValue],
-            (unsigned long)[r[@"identical"] unsignedIntegerValue],
-            (unsigned long)[r[@"conflict"] unsignedIntegerValue],
-            (unsigned long)[r[@"renamed"] unsignedIntegerValue]]];
-        for (NSString *e in r[@"errors"]) [issues addObject:e];
-    }
-    [body appendFormat:@"%@", [NSString stringWithFormat:localize(@"preference.migrate.summary", nil),
-        (unsigned long)copied, (unsigned long)identical, (unsigned long)conflicts, (unsigned long)renamed]];
-    if (removeSource && [rep[@"removed"] boolValue]) {
-        [body appendFormat:@"\n%@", localize(@"preference.migrate.removed", nil)];
-    }
-    if (issues.count > 0) {
-        [body appendFormat:@"\n\n%@\n· %@", localize(@"preference.migrate.issues", nil),
-            [issues componentsJoinedByString:@"\n· "]];
-    }
-
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"preference.migrate.result.title", nil)
-                                                                  message:body
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    if (!removeSource && copied > 0 && conflicts == 0) {
-        __weak LauncherProfileEditorViewController *weakSelf = self;
-        [alert addAction:[UIAlertAction actionWithTitle:localize(@"preference.migrate.cleanup_source", nil)
-                                                  style:UIAlertActionStyleDestructive
-                                                handler:^(UIAlertAction *a){
-            [weakSelf runMigrateItems:names removeSource:YES];
-        }]];
-    }
-    [alert addAction:[UIAlertAction actionWithTitle:localize(@"OK", nil)
-                                              style:UIAlertActionStyleCancel handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
 
 - (BOOL)isPickFieldAtSection:(NSString *)section key:(NSString *)key {
     NSDictionary *pref = [self.prefContents[0] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"(key == %@)", key]].firstObject;
