@@ -140,6 +140,40 @@ static inline BOOL AMEGlassStyleUsesNativeAppearance(void) {
     return AMEGlassStyleResolved() == AMEGlassStyleNative;
 }
 
+#pragma mark - ★ [FONT-SIMPLE] 原生风格下「固定两套配色」总开关(默认开)
+
+/// ★ 用户拍板(2026-10-06 原话):「**原生就是黑底白字或者白底黑字,就这两样,背景管他呢**」
+///   背景:字体在真机上仍频繁出现「半亮半不亮 / 灰糊」——根因是 [BG-CONTRAST] 的
+///   「按壁纸亮度自适应」对照片类壁纸不稳定(中位数在阈值附近抖动),且深/浅两套 alpha 折中值
+///   在任意底上都只是"勉强",不是"清楚"。
+///   ⇒ 简化:原生风格下**不再看壁纸亮度**,直接用系统语义色 —— 浅色外观=白底/黑字,
+///     深色外观=黑底/白字(iOS 系统 light/dark 决定),保证任何界面文字都可读。
+///   ★ 液态玻璃(iOS≥26 生效)路径【完全不变】:仍走壁纸可见 + [BG-CONTRAST] 自适应。
+///   ★ 关键回滚点(一行):把下面 AMEFontSimpleEnabled() 的默认值改成 NO
+///     (或 NSUserDefaults 里把 `background_font_simple` 置 false)⇒ 立即退回旧自适应行为。
+#define AMEFontSimplePrefKey @"background_font_simple"
+
+/// 总开关(默认 **开**)。未存过 ⇒ YES;显式存 NO ⇒ 关闭(回退 [BG-CONTRAST] 自适应)。
+static inline BOOL AMEFontSimpleEnabled(void) {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    id v = [d objectForKey:AMEFontSimplePrefKey];
+    return v ? [d boolForKey:AMEFontSimplePrefKey] : YES;   // ★ 默认开(用户拍板)
+}
+
+/// 是否【当前生效】的简化配色 = 总开关开 且 实际生效风格=原生。
+///   (iOS<26 一律强制原生 ⇒ 这些设备上恒为 YES;iOS≥26 用户选「液态玻璃」⇒ NO,保持原状。)
+static inline BOOL AMEFontSimpleActive(void) {
+    return AMEFontSimpleEnabled() && AMEGlassStyleUsesNativeAppearance();
+}
+
+/// 写入总开关并广播(设置页可调用;不调用也不会变,默认即开)。
+static inline void AMEFontSimpleSetEnabled(BOOL on) {
+    [[NSUserDefaults standardUserDefaults] setBool:on forKey:AMEFontSimplePrefKey];
+    [[NSNotificationCenter defaultCenter] postNotificationName:AMEGlassStyleChangedNotification object:nil];
+    NSLog(@"[font-simple] 固定两套配色开关 = %@(原生风格下:浅色=白底黑字 / 深色=黑底白字)",
+          on ? @"开" : @"关(回退按壁纸亮度自适应)");
+}
+
 /// 是否允许绘制【纯代码玻璃质感】(高光描边 / 内高光 / 外阴影 / 私有 backdrop 调参 / 白底填充)。
 /// ★ [GLASS-LIQUID] 群主口径 = 「纯液态」:iOS≥26 走【系统】UIGlassEffect、iOS<26 走【系统原生材质】,
 ///   两者都**不再**用代码画玻璃。因此这里默认返回 NO(自绘全局关闭)。

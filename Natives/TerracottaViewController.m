@@ -228,11 +228,11 @@ static NSString *TCLocalized(NSString *key, NSString *fallback) {
     }
 
     /* 文字颜色：背景图模式下用白字保证对比度；系统背景模式下用 labelColor */
-    // ★ [GLASS-BG] 原生风格 ⇒ 面已实底,不按壁纸取白字(原 hasBackground 口径在实底上会不可读)
+    // ★ [BG-CONTRAST] 壁纸可见 ⇒ 按壁纸明暗取自适应前景(不再写死白字;浅壁纸下白字不可读)
     BOOL hasBg = [[BackgroundManager sharedManager] hasUIVisibleBackground];
-    UIColor *primaryText = hasBg ? [UIColor whiteColor] : [UIColor labelColor];
-    UIColor *secondaryText = hasBg ? [UIColor colorWithWhite:1.0 alpha:0.8] : [UIColor secondaryLabelColor];
-    UIColor *tertiaryText = hasBg ? [UIColor colorWithWhite:1.0 alpha:0.7] : [UIColor tertiaryLabelColor];
+    UIColor *primaryText = hasBg ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor labelColor];
+    UIColor *secondaryText = hasBg ? AMEForegroundColor(AMEForegroundRoleSecondary) : [UIColor secondaryLabelColor];
+    UIColor *tertiaryText = hasBg ? AMEForegroundColor(AMEForegroundRoleTertiary) : [UIColor tertiaryLabelColor];
 
     self.statusLabel.textColor = primaryText;
     self.stageLabel.textColor = secondaryText;

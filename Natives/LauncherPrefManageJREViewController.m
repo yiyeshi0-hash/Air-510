@@ -288,9 +288,9 @@ static NSString *currentImportTaskId;
 
     // 透明背景：不再使用毛玻璃，可看到背景图
     header.backgroundView = nil;
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
-        header.textLabel.textColor = [UIColor whiteColor];
-        header.textLabel.shadowColor = [UIColor blackColor];
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
+        header.textLabel.textColor = AMEForegroundColor(AMEForegroundRolePrimary);
+        header.textLabel.shadowColor = AMEForegroundShadowColor();
         header.textLabel.shadowOffset = CGSizeMake(0, 1);
     } else {
         header.textLabel.textColor = [UIColor labelColor];

@@ -1087,7 +1087,7 @@ static NSArray<NSString *> *PALParseForgeMetaXML(NSData *data, NSString *gameVer
     _nameBar = [[UIView alloc] init];
     _nameBar.translatesAutoresizingMaskIntoConstraints = NO;
     // 适配自定义启动器背景：有全局背景时用毛玻璃，否则用默认实色
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         _nameBar.backgroundColor = [UIColor clearColor];
         [[BackgroundManager sharedManager] applyEffectToView:_nameBar];
         _nameBar.layer.cornerRadius = 10;

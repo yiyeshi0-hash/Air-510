@@ -35,6 +35,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// DownloadTaskManager 会在该任务首次更新时自动调用本方法弹出。
 + (void)presentForTaskId:(NSString *)taskId;
 
+/// ★ [DL-THEN-LAUNCH] 收起当前同屏的统一下载进度页（若有）。
+///   用途：在「缺件 / 启动门禁」类提示弹出【之前】先收掉它。
+///   根因：本页 autoDismissOnCompletion=YES，任务完成 1.5s 后会自行 dismiss；
+///   若把提示挂在它身上，提示（连同按钮）会被它一起拆掉 ⇒ 用户报的「弹缺件 → 闪一秒钟消失」。
++ (void)dismissActiveProgressAnimated:(BOOL)animated;
+
 @end
 
 NS_ASSUME_NONNULL_END

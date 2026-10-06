@@ -486,15 +486,22 @@
         }
     } else if (indexPath.section == 3) {
         if (indexPath.row == 0) {
-            // 恢复默认背景
+            // ★ [BG-RESTORE] 「恢复」= 撤销上一次「清除背景」(把清除前那张壁纸设回来),
+            //   ★ 不是「恢复默认渐变」。无可恢复 ⇒ 置灰且不可点(文案与行为一致)。
+            BOOL canRestore = [manager canRestoreLastBackground];
             cell.imageView.image = [UIImage systemImageNamed:@"arrow.counterclockwise"];
-            cell.textLabel.textColor = [UIColor systemBlueColor];
+            cell.textLabel.textColor = canRestore ? [UIColor systemBlueColor] : [UIColor tertiaryLabelColor];
+            cell.imageView.alpha = canRestore ? 1.0 : 0.35;
             cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.selectionStyle = canRestore ? UITableViewCellSelectionStyleDefault
+                                             : UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 1) {
             // 清除背景
             cell.imageView.image = [UIImage systemImageNamed:@"xmark.circle"];
             cell.textLabel.textColor = [UIColor systemRedColor];
+            cell.imageView.alpha = 1.0;
             cell.accessoryType = UITableViewCellAccessoryNone;
+            cell.selectionStyle = UITableViewCellSelectionStyleDefault;
         }
     }
     
@@ -668,7 +675,7 @@
         }
     } else if (indexPath.section == 3) {
         if (indexPath.row == 0) {
-            [self restoreDefaultBackground];
+            [self restoreLastBackground];   // ★ [BG-RESTORE] 恢复 = 回到清除前那张壁纸
         } else if (indexPath.row == 1) {
             [self clearBackground];
         }
@@ -775,7 +782,24 @@
     [self presentViewController:alert animated:YES completion:nil];
 }
 
-- (void)restoreDefaultBackground {
+// ★ [BG-RESTORE] 「恢复」= 撤销上一次「清除背景」:把【清除前那张壁纸】重新设为背景。
+//   ★ 语义更正(2026-10-06 用户原话:「**恢复是恢复清除前的图**」):
+//     —— 不是"恢复成默认渐变",也不重置 UI 效果设置(文案与行为必须一致)。
+//   无可恢复(从未清过/副本已失效)⇒ 置灰不可点 + 说明弹窗,不做任何破坏性动作。
+- (void)restoreLastBackground {
+    BackgroundManager *manager = [BackgroundManager sharedManager];
+
+    if (![manager canRestoreLastBackground]) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_62", nil)
+                                                                       message:localize(@"i18n_str_9113", nil)
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:localize(@"resman.common.ok", nil)
+                                                  style:UIAlertActionStyleCancel
+                                                handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:localize(@"i18n_str_62", nil)
                                                                    message:localize(@"i18n_str_74", nil)
                                                             preferredStyle:UIAlertControllerStyleAlert];
@@ -785,25 +809,20 @@
                                             handler:nil]];
     
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"i18n_str_75", nil)
-                                              style:UIAlertActionStyleDestructive
+                                              style:UIAlertActionStyleDefault
                                             handler:^(UIAlertAction * _Nonnull action) {
-        // 清除背景
-        [[BackgroundManager sharedManager] clearBackground];
-        
-        // 重置UI效果设置
-        BackgroundManager *manager = [BackgroundManager sharedManager];
-        manager.uiEffect = BackgroundUIEffectBlur;
-        manager.uiOpacity = 0.7;
-        
-        [self updatePreview];
-        [self.tableView reloadData];
-        
-        // 恢复默认背景色
-        self.view.backgroundColor = [UIColor systemBackgroundColor];
-        self.tableView.backgroundColor = [UIColor systemBackgroundColor];
-        self.tableView.backgroundView = nil;
-        
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"BackgroundChanged" object:nil];
+        // ★ [BG-RESTORE] 把清除前的壁纸设回来(BackgroundManager 内部会重新铺壁纸 + 广播前景重算)
+        [manager restoreLastBackgroundWithCompletion:^(BOOL success, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self updatePreview];
+                [self.tableView reloadData];
+                // 恢复后本页也要重新透明化,让壁纸立刻透出(与 viewWillAppear 同口径)
+                [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"BackgroundChanged" object:nil];
+                NSLog(@"[bg-restore] 设置页「恢复」%@",
+                      success ? @"成功(已回到清除前的背景)" : (error.localizedDescription ?: @"失败"));
+            });
+        }];
     }]];
     
     [self presentViewController:alert animated:YES completion:nil];
@@ -828,6 +847,9 @@
         // Restore default background color
         self.view.backgroundColor = [UIColor systemBackgroundColor];
         self.tableView.backgroundColor = [UIColor systemBackgroundColor];
+        // ★ [BG-RESTORE] 清后按新状态重新透明化(决定权在 BackgroundManager:无壁纸 ⇒ 实底/默认渐变;
+        //   有壁纸(风格或时序差异)⇒ 透出壁纸)。必须放在上面两行之后,否则会被覆盖。
+        [[BackgroundManager sharedManager] makeViewControllerTransparent:self];
         
         [[NSNotificationCenter defaultCenter] postNotificationName:@"BackgroundChanged" object:nil];
     }]];

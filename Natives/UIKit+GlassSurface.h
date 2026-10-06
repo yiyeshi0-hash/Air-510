@@ -299,6 +299,76 @@ static CGFloat gAmeGlassRimStrength = 1.0;
 static inline void AmeSetGlassRimStrength(CGFloat s) { gAmeGlassRimStrength = MAX(0.0, MIN(1.0, s)); }
 static inline CGFloat AmeGlassRimStrengthValue(void) { return gAmeGlassRimStrength; }
 
+#pragma mark - ★ [NO-RIM] 自绘高光总闸(单一真相源)+ 设置页硬关
+
+// ★ [NO-RIM] 为什么要有这一段(2026-10-06 用户 bug:「设置页面永远不要有自绘高光,每次换壁纸他都
+//   自己冒出来(★没开开关★)」):
+//   ① 旧的「强度」是【头文件里的文件作用域 static】(上一行 gAmeGlassRimStrength)+ static inline
+//      setter ⇒ 每个 .m 各拿一份副本:BackgroundManager 里写 0 只改它自己那份,别的 TU(例如
+//      LauncherNewsViewController.m 直挂 rim 的那几处)永远读到 1.0 ⇒ 开关/滑块在那些页面失效
+//      = 用户看到的「开关没开却还有高光 / 滑块拖了没用」。
+//   ② 旧的闸只认「风格层 + 强度」,【不认页面】⇒ 设置页只要有 radius>0 的容器走
+//      applyEffectToView: 的 BLUR 分支,就会再被贴一次 1px 描边 + 上缘内高光;
+//      而「换壁纸」会重铺背景并让各页重刷(= 又走一次这条路径)⇒ 高光「每次换壁纸都自己冒出来」。
+//   修法:总闸直接读【与 BackgroundManager / 设置页同一组 NSUserDefaults 键】(进程级唯一真相,
+//   与调用方在哪个 TU 无关),并在闸的最前面加一条【与开关无关】的设置页硬关。
+
+/// 该视图是否属于「设置页」。判定 = 沿 nextResponder 链上溯,遇到类名含 Preferences / Settings 的
+/// UIViewController 即 YES。★ 不依赖各 VC 自己登记 ⇒ 换壁纸 / 切风格 / 回前台 / 重建视图 /
+/// 将来新增入口都拦得住(设置页【永远】不画自绘高光,用户原话)。
+static inline BOOL AmeViewBelongsToSettingsPage(UIView *host) {
+    if (host == nil) { return NO; }
+    UIResponder *ameResponder = host;
+    NSInteger ameGuard = 0;                     // 防御:链异常时不死循环
+    while (ameResponder != nil && ameGuard++ < 256) {
+        if ([ameResponder isKindOfClass:[UIViewController class]]) {
+            NSString *ameCN = NSStringFromClass(((UIViewController *)ameResponder).class);
+            if (ameCN.length > 0 &&
+                ([ameCN rangeOfString:@"Preferences"].location != NSNotFound ||
+                 [ameCN rangeOfString:@"Settings"].location     != NSNotFound)) {
+                return YES;
+            }
+        }
+        ameResponder = [ameResponder nextResponder];
+    }
+    return NO;
+}
+
+/// ★ [NO-RIM] 自绘高光总闸(进程级单一真相源)。
+///   = 风格层允许自绘(AMEGlassStyleAllowsHandDrawnGlass:「自绘高光」开 && iOS≥26)
+///     && 设置里的高光开关为开(background_glass_rim_enabled,缺键 ⇒ 默认开,与 BackgroundManager 一致)
+///     && 强度 > 0(background_glass_rim_strength,缺键 ⇒ 默认 1.0)。
+///   ★ 直接读 NSUserDefaults ⇒ 任何 TU 读到的都是同一份;开关一改、任何重绘立刻生效。
+static inline BOOL AmeGlassRimDrawingAllowed(void) {
+    if (!AMEGlassStyleAllowsHandDrawnGlass()) { return NO; }
+    NSUserDefaults *ameRimDefaults = [NSUserDefaults standardUserDefaults];
+    if ([ameRimDefaults objectForKey:@"background_glass_rim_enabled"] != nil &&
+        ![ameRimDefaults boolForKey:@"background_glass_rim_enabled"]) {
+        return NO;   // ★ 开关为关 ⇒ 任何页面、任何重绘路径都不许画 rim
+    }
+    if ([ameRimDefaults objectForKey:@"background_glass_rim_strength"] != nil &&
+        [ameRimDefaults floatForKey:@"background_glass_rim_strength"] <= 0.001f) {
+        return NO;   // 强度 0 == 关
+    }
+    return YES;
+}
+
+/// ★ [NO-RIM] 当前生效强度(0…1):与总闸同一份真相源(缺键 ⇒ 回落 TU 内 gAmeGlassRimStrength,
+///   最终兜底 1.0)。旧写法只读 TU 内副本 ⇒ 主页卡片永远 1.0、滑块对它无效。
+static inline CGFloat AmeGlassRimStrengthResolved(void) {
+    NSUserDefaults *ameRimDefaults = [NSUserDefaults standardUserDefaults];
+    if ([ameRimDefaults objectForKey:@"background_glass_rim_strength"] == nil) {
+        return AmeGlassRimStrengthValue();
+    }
+    return MAX(0.0, MIN(1.0, [ameRimDefaults floatForKey:@"background_glass_rim_strength"]));
+}
+
+/// ★ [NO-RIM] 是否禁止在该宿主上画自绘高光(设置页硬关;开关关时代价最小的一次短路)
+static inline BOOL AmeGlassRimForbiddenOnHost(UIView *host) {
+    if (AmeViewBelongsToSettingsPage(host)) { return YES; }   // ★ 设置页:永远不画(与开关无关)
+    return !AmeGlassRimDrawingAllowed();                       // 风格层 / 开关 / 强度
+}
+
 /// ★ [RIM-STATE] 「高光载体」标记。
 ///   高光是「只加不删就残留 / 只在已有时才刷新就永远加不回来」的典型受害者 ⇒ 需要一个
 ///   【与开关无关】的持久标记:凡是曾经被当作玻璃载体贴过高光的视图都打上它。
@@ -335,10 +405,13 @@ static inline void AmeAttachGlassRim(UIView *host, CGFloat radius) {
     // ★ [RIM-STATE] 打「高光载体」标记(在风格/强度判定【之前】,所以关闭期间也记得谁是载体)⇒
     //   之后「关→开」才能凭标记把高光补回来,而不是像原先一样"没有高光子层就永远不再加"。
     AmeMarkGlassRimHost(host);
-    // ★ [GLASS-STYLE] 原生风格(iOS<26,或用户在 iOS>=26 上显式选「原生」):
-    //   不绘制任何纯代码玻璃质感(1px 描边 / 上缘内高光 / 外阴影)⇒ 观感收敛到系统材质。
-    if (!AMEGlassStyleAllowsHandDrawnGlass()) { AmeDetachGlassRim(host); return; }
-    CGFloat ameStrength = AmeGlassRimStrengthValue();
+    // ★ [NO-RIM] 设置页硬关 + 总闸 —— 放在【任何时候都要过】的位置:
+    //   · 设置页(Preferences/Settings 相关 VC)⇒ 与开关/风格无关,一律不画;
+    //   · 开关关 / 强度 0 / 原生风格 ⇒ 一律不画;
+    //   注意这里【顺手 detach】:关闭态下被再次调到时,把历史残留的描边/渐变层摘干净,
+    //   否则换壁纸/切风格后又会「自己冒出来」。
+    if (AmeGlassRimForbiddenOnHost(host)) { AmeDetachGlassRim(host); return; }
+    CGFloat ameStrength = AmeGlassRimStrengthResolved();
     if (ameStrength <= 0.001) { AmeDetachGlassRim(host); return; }   // ★ 强度 0 ⇒ 一条都不刷
     static const NSInteger kAmeRimTag = 0x4D52494D;   // 'MRIM'
     // ★ [RIM-STATE] 幂等 + remove-then-apply(单一入口):
@@ -401,7 +474,10 @@ static inline void AmeAttachGlassRim(UIView *host, CGFloat radius) {
 /// 载体尺寸变化时刷新高光渐变与阴影路径(布局后调用;找不到就什么也不做)
 static inline void AmeRefreshGlassRim(UIView *host) {
     if (host == nil) return;
-    if (!AMEGlassStyleAllowsHandDrawnGlass()) { return; }   // ★ [GLASS-STYLE] 原生风格下没有 rim 可刷新
+    // ★ [NO-RIM] 刷新路径也要过同一道闸(原来只看风格):
+    //   开关关 / 设置页 / 原生风格 ⇒ 【顺手摘掉】历史残留的高光,而不是把它留着继续发光
+    //   ——「换壁纸后高光自己冒出来」就是残留在重绘时露出来的形状。
+    if (AmeGlassRimForbiddenOnHost(host)) { AmeDetachGlassRim(host); return; }
     static const NSInteger kAmeRimTag = 0x4D52494D;   // 'MRIM'
     for (UIView *sub in host.subviews) {
         if (sub.tag != kAmeRimTag) { continue; }

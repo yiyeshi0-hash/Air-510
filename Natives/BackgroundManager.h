@@ -102,11 +102,28 @@ FOUNDATION_EXPORT UIColor * _Nullable AMEForegroundShadowColor(void);
 - (void)setVideoBackgroundWithURL:(NSURL *)videoURL completion:(void (^)(BOOL success, NSError * _Nullable error))completion;
 - (void)clearBackground;
 
+// ★ [BG-RESTORE] 「恢复」= 撤销上一次「清除背景」—— 把清除前的那张壁纸重新设为背景。
+//   ★ 语义更正(2026-10-06 用户原话:「**恢复是恢复清除前的图**」)⇒ 不是"恢复成默认渐变"。
+//   实现:clearBackgroundInternal 在删除当前壁纸【之前】,先把文件本体复制一份到
+//         <Documents>/backgrounds/last_background.<ext> 并记下类型 ⇒ 「恢复」读回该副本。
+/// 是否存在可恢复(最近一次被清除)的壁纸。
+- (BOOL)canRestoreLastBackground;
+/// 把最近一次被清除的壁纸重新设为当前背景(真生效 + 广播)。
+- (void)restoreLastBackgroundWithCompletion:(void (^ _Nullable)(BOOL success, NSError * _Nullable error))completion;
+/// 被保留的「上次壁纸」副本路径(nil = 无可恢复);供设置页显示/判据。
+- (nullable NSString *)lastBackgroundPath;
+
 // Check if has background
 - (BOOL)hasBackground;
-/// ★ [GLASS-BG] 「本风格下壁纸是否可见」= hasBackground 且 实际生效风格=液态玻璃。
-///   用户拍板「如果是原生就不透」⇒ 原生风格(含 iOS<26 强制原生)下页面/面板/行一律实底,
-///   壁纸不参与 UI。各处「按壁纸透明化 / 按壁纸取前景色」的分支请用这一条,别用 hasBackground。
+/// ★ [GLASS-BG] 「壁纸在 UI 上是否可见」。
+///   ★ 2026-10-06 用户纠正:「**卡片可以挡住背景,但背景不能完全不显示**」
+///     ⇒ 只要配了自定义壁纸,页面/窗口底就让它透出来(与界面风格无关);
+///       元素层(卡片/面板/行/胶囊)另有实底保证可读 —— 两者是【两个独立判据,不互相抵消】。
+///   因此本方法现在 == hasBackground(壁纸在所有风格下都可见),保留本名作为
+///   「要不要透明化页面 / 要不要按壁纸取前景色」的统一语义入口(32 处调用点沿用)。
+///   ★ 与 hasBackground 的分工:
+///     · hasBackground        = 「配置了壁纸」(背景安装、亮度取样、设置页展示 用这个);
+///     · hasUIVisibleBackground = 「壁纸会在 UI 上透出」(判断要不要透明化/要不要按壁纸调前景 用这个)。
 - (BOOL)hasUIVisibleBackground;
 - (BOOL)hasImageBackground;
 - (BOOL)hasVideoBackground;

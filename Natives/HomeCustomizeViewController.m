@@ -278,7 +278,7 @@ static NSInteger AmeSegmentIndexForTileSize(HomeTileSize size) {
     self.navigationController.toolbarHidden = NO;
     
     // 背景
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         self.view.backgroundColor = [UIColor clearColor];
     } else {
         self.view.backgroundColor = [UIColor systemGroupedBackgroundColor];

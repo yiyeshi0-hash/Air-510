@@ -17,7 +17,7 @@ extern NSMutableDictionary *prefDict;
     [super viewDidLoad];
 
     // Set background color based on whether custom background exists
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         self.view.backgroundColor = [UIColor clearColor];
     } else {
         if (@available(iOS 13.0, *)) {
@@ -86,7 +86,7 @@ extern NSMutableDictionary *prefDict;
 
 - (void)navigationControllerDidShow:(NSNotification *)notification {
     // Ensure transparency is maintained when navigating (only for custom backgrounds)
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         dispatch_async(dispatch_get_main_queue(), ^{
             [[BackgroundManager sharedManager] makeSplitViewControllerTransparent:self];
         });
@@ -102,7 +102,7 @@ extern NSMutableDictionary *prefDict;
     [[BackgroundManager sharedManager] applyBackgroundToSplitViewController:self];
     
     // Update view background color based on current state
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         self.view.backgroundColor = [UIColor clearColor];
     } else {
         if (@available(iOS 13.0, *)) {
@@ -125,7 +125,7 @@ extern NSMutableDictionary *prefDict;
     [[BackgroundManager sharedManager] resumeVideo];
 
     // Ensure transparency only for custom backgrounds
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         [[BackgroundManager sharedManager] makeSplitViewControllerTransparent:self];
     }
 }

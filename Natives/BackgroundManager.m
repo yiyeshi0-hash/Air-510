@@ -19,6 +19,8 @@ static NSString * const kBackgroundBlurIntensityKey = @"background_blur_intensit
 static NSString * const kGlassRimEnabledKey  = @"background_glass_rim_enabled";   // ★ [RIM-UI]
 static NSString * const kGlassRimStrengthKey = @"background_glass_rim_strength";  // ★ [RIM-UI]
 static NSString * const kForegroundModeKey   = @"background_foreground_mode";     // ★ [BG-CONTRAST]
+static NSString * const kLastBackgroundPathKey = @"background_last_path";          // ★ [BG-RESTORE]
+static NSString * const kLastBackgroundTypeKey = @"background_last_type";          // ★ [BG-RESTORE]
 static NSString * const kBackgroundsFolder = @"backgrounds";
 static const NSInteger kGlobalBackgroundTag = 99999;
 static const NSInteger kBackgroundImageTag = 99998;
@@ -189,9 +191,15 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 - (void)ame_invalidateForegroundContrast;
 // ★ [E3] 私有:把默认渐变背景挂到宿主(window / splitVC.view)
 - (void)ame_applyDefaultGradientToHost:(UIView *)host;
+// ★ [BG-CONTRAST][GLASS-BG] 元素实底卡面:与「自适应前景」同极性(元素有底 + 文字可读)
+- (UIColor *)ame_solidElementBaseColor;
+// ★ [BG-RESTORE] 清除前快照当前壁纸文件(供「恢复」回退)
+- (void)ame_snapshotCurrentBackgroundForRestore;
 // ★ [GLASSUI] 私有:玻璃高光设置即时生效(设置页接入用)
 - (void)applyGlassRimSettingsNow;
 - (void)ameApplyGlassRimSettingsToViewTree:(UIView *)root;
+// ★ [NO-RIM] 私有:背景(壁纸)变更后,对全窗视图树按【当前开关/风格/设置页】重判一次自绘高光
+- (void)ameReassertRimPolicyOnAllWindows;
 // ★ [GLASS-STYLE] 私有:界面风格(原生 / 液态玻璃)即时生效
 - (void)ameSyncGlassRimStrengthForCurrentStyle;
 - (void)ameReapplyGlassStyleToViewTree:(UIView *)root;
@@ -366,6 +374,11 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
           AMEGlassStyleStringFromEnum(AMEGlassStyleConfigured()),
           AMEGlassStyleSystemSupportsLiquid() ? @"是" : @"否",
           AMEGlassStyleStringFromEnum(AMEGlassStyleResolved()));
+    // ★ [FONT-SIMPLE] 自证日志:原生风格下是否走「固定两套配色」(浅=白底黑字 / 深=黑底白字)
+    NSLog(@"[font-simple] 固定两套配色: 开关=%@ · 实际生效=%@ · 前景=%@",
+          AMEFontSimpleEnabled() ? @"开" : @"关",
+          AMEFontSimpleActive() ? @"是(不再按壁纸亮度自适应)" : @"否(走 [BG-CONTRAST] 自适应)",
+          AMEFontSimpleActive() ? @"系统语义色(labelColor 一族)" : @"壁纸亮度自适应");
 }
 
 - (void)saveUISettings {
@@ -437,13 +450,13 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
         return;
     }
 
-    // ★ [GLASS-BG] 原生风格 ⇒ 窗口底一律实底系统色:不挂默认渐变、也不挂壁纸容器。
-    //   用户拍板「如果是原生就不透」:页面/面板/行/胶囊都已按系统实底渲染,若窗口层仍挂
-    //   渐变或壁纸,那些「页面自己把背景清成 clearColor」的地方(29 处)会把它透出来 ⇒ 仍读作“透”。
-    //   ⇒ 原生风格下窗口底 = systemBackgroundColor,界面没有任何可透的东西。
-    //   (壁纸仍保存在偏好里;切回「液态玻璃」时由 ameGlassStyleChanged: 重新铺回来。)
-    if (AMEGlassStyleUsesNativeAppearance()) {
-        NSLog(@"[glass] applyBackgroundToWindow: [GLASS-BG] 原生风格 ⇒ 窗口底实底(不铺渐变/壁纸)");
+    // ★ [GLASS-BG] ★2026-10-06 用户纠正:「**卡片可以挡住背景,但背景不能完全不显示**」
+    //   ⇒ 只有【没有自定义壁纸】时,原生风格才走实底(不铺渐变/壁纸);
+    //     有壁纸时必须把壁纸铺回来(页面/窗口底透出壁纸),否则就是用户报的「外面还没效果」。
+    //   口径:元素层可以有实底(见 applyEffectTo* 的实底分支),页面/窗口底必须让壁纸可见。
+    //   ([FONT-SIMPLE] 原生风格下 hasUIVisibleBackground 恒 NO ⇒ 有壁纸也走实底,壁纸不参与 UI。)
+    if (AMEGlassStyleUsesNativeAppearance() && ![self hasUIVisibleBackground]) {
+        NSLog(@"[glass] applyBackgroundToWindow: [GLASS-BG] 原生风格且无壁纸可透 ⇒ 窗口底实底(不铺渐变/壁纸)");
         self.currentWindow = window;
         self.currentSplitVC = nil;
         [self removeGlobalBackground];   // 清掉历史渐变/壁纸容器(内部 cleanupVideoPlayer)
@@ -501,9 +514,10 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
         return;
     }
 
-    // ★ [GLASS-BG] 原生风格 ⇒ 与 applyBackgroundToWindow: 同口径:splitVC 底也一律实底系统色
-    if (AMEGlassStyleUsesNativeAppearance()) {
-        NSLog(@"[glass] applyBackgroundToSplitViewController: [GLASS-BG] 原生风格 ⇒ 底实底(不铺渐变/壁纸)");
+    // ★ [GLASS-BG] ★2026-10-06 用户纠正:同 applyBackgroundToWindow: ——
+    //   只有【无自定义壁纸】时原生风格才实底;有壁纸时必须铺回壁纸(splitVC 底也让壁纸可见)。
+    if (AMEGlassStyleUsesNativeAppearance() && ![self hasUIVisibleBackground]) {
+        NSLog(@"[glass] applyBackgroundToSplitViewController: [GLASS-BG] 原生风格且无壁纸可透 ⇒ 底实底(不铺渐变/壁纸)");
         self.currentSplitVC = splitVC;
         self.currentWindow = nil;
         [self removeGlobalBackground];
@@ -754,13 +768,13 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 - (void)makeViewControllerTransparent:(UIViewController *)viewController {
     if (!viewController) return;
 
-    // ★ [GLASS-BG] 续(用户拍板「如果是原生就不透」)★
+    // ★ [GLASS-BG] ★2026-10-06 用户纠正:「**卡片可以挡住背景,但背景不能完全不显示**」
     //   实际生效风格 = native(含 iOS<26 强制原生,或用户在 iOS≥26 上显式选「原生」)
-    //   ⇒ 页面一律【实底不透明】,不再把 view 清成 clearColor(那会透出窗口层的渐变/壁纸)。
-    //   ★ 先摘掉历史玻璃层:运行期从「液态玻璃」切到「原生」时,页面上可能还留着上一轮铺的
-    //     kBackgroundBlurTag 模糊层 —— 只改背景色会把它们留在实底上(白雾)。
-    if (AMEGlassStyleUsesNativeAppearance()) {
-        NSLog(@"[glass] makeViewControllerTransparent: [GLASS-BG] 原生风格 ⇒ 页面不透明(实底) on %@",
+    //   【且没有自定义壁纸】⇒ 页面实底不透明(没有任何可透出的东西)。
+    //   ★ 有壁纸时:【不再】把页面做成实底 —— 页面底必须让壁纸可见(用户报的「外面还没效果」
+    //     正是这条 guard 把页面连同壁纸一起盖掉了);元素层另有实底保证可读(见 applyEffectTo*)。
+    if (AMEGlassStyleUsesNativeAppearance() && ![self hasUIVisibleBackground]) {
+        NSLog(@"[glass] makeViewControllerTransparent: [GLASS-BG] 原生风格且无壁纸可透 ⇒ 页面不透明(实底) on %@",
               NSStringFromClass(viewController.class));
         for (UIView *sub in [viewController.view.subviews copy]) {
             if ([sub isKindOfClass:[UIVisualEffectView class]] && sub.tag == kBackgroundBlurTag) {
@@ -833,9 +847,12 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     AmeDetachGlassRim(cell);
 
     // ★ [GLASS-BG] 列表行实底判定(同 applyEffectToView:,见那里注释):
-    //   实际生效风格=native ⇒ 一律实底;生效=liquid 但无壁纸可透 ⇒ 也给实底。
+    //   · 实际生效风格=native ⇒ 行是【元素】⇒ 给实底(卡片可挡背景);
+    //   · 生效=liquid 但无壁纸可透 ⇒ 也给实底;liquid + 有壁纸 ⇒ 走下面的玻璃路径(不变)。
+    //   ★ 实底颜色取 `ame_solidElementBaseColor`(与自适应前景同极性)⇒ 「元素有底」与
+    //     「文字可读」两个判据互不抵消(深壁纸 ⇒ 白字 + 深实底)。
     BOOL ameNativeSolidRow = AMEGlassStyleUsesNativeAppearance();
-    if (ameNativeSolidRow || ![self hasBackground]) {
+    if (ameNativeSolidRow || ![self hasUIVisibleBackground]) {
         NSLog(@"[glass] applyEffectToCell: [GLASS-BG] %@ ⇒ 行实底/不透明",
               ameNativeSolidRow ? @"原生风格" : @"无自定义背景");
         for (UIView *subview in [cell.contentView.superview.subviews copy]) {
@@ -849,7 +866,7 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
         cell.layer.cornerRadius = ameRowRadius;
         cell.layer.cornerCurve = kCACornerCurveContinuous;
         cell.layer.masksToBounds = YES;
-        cell.contentView.backgroundColor = [UIColor secondarySystemBackgroundColor];   // ★ [GLASS-BG] 行实底
+        cell.contentView.backgroundColor = [self ame_solidElementBaseColor];   // ★ [BG-CONTRAST] 行实底(与前景同极性)
         cell.contentView.layer.cornerRadius = ameRowRadius;
         cell.contentView.layer.cornerCurve = kCACornerCurveContinuous;
         cell.contentView.layer.masksToBounds = YES;
@@ -1135,31 +1152,50 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 - (void)applyEffectToView:(UIView *)view {
     if (!view) return;
 
-    // ★ [GLASS-BG] 「实底(不透明)」的判定 —— 用户拍板「如果是原生就不透」:
-    //   · 实际生效风格 = native ⇒ 一律实底(不再问有没有壁纸);
-    //   · 生效风格 = liquid 但没有自定义壁纸可透出 ⇒ 也给实底(上一轮 GLASS-BG 口径,保留)。
-    //   旧管线无论有无壁纸都铺一层【无底的毛玻璃】:
-    //     · applyEffectToView: 把宿主 `backgroundColor = clearColor`,只挂 UIVisualEffectView;
-    //     · GLASS-LIQUID 之后 `AmeApplyGlassFillForCurrentStyle` 在系统材质路径又【不给任何填充】;
-    //     · 无壁纸时系统材质(ThinMaterial / iOS26 UIGlassEffect Regular)本身极通透 ⇒
-    //       宿主下方(默认渐变底 / 纯色)整片透出 ⇒ 用户报的「很多背景都是透明的 / 切回原生还透明」。
-    //   (有壁纸 且 生效=液态玻璃 时保持下面的毛玻璃/半透明,壁纸正常透出 —— 与上游同口径。)
-    BOOL ameNativeSolidView = AMEGlassStyleUsesNativeAppearance();
-    if (ameNativeSolidView || ![self hasBackground]) {
+    // ★ [GLASS-BG] 「实底(不透明)」的判定 —— ★2026-10-06 用户纠正:
+    //   「**卡片可以挡住背景,但背景不能完全不显示**」⇒「不透」只针对【元素底】,不针对页面底。
+    //   · 无自定义壁纸 ⇒ 一律实底(没有任何可透出的东西);
+    //   · 原生风格 + 有壁纸 ⇒ 只有【元素】(radius>0 的卡片/面板/行/胶囊)给实底(卡片可挡背景);
+    //     页面级视图(radius==0)走下面的「页面底透出壁纸」分支;
+    //   · 液态玻璃 ⇒ 行为不变(有壁纸时玻璃/半透,无壁纸时实底)。
+    //   实底颜色 = `ame_solidElementBaseColor`(与自适应前景同极性)⇒ 元素有底 + 文字可读,两判据不互相抵消。
+    BOOL ameHasBgView = [self hasUIVisibleBackground];   // ★ [FONT-SIMPLE] 原生 ⇒ NO ⇒ 页面/元素一律实底
+    BOOL ameNativeView = AMEGlassStyleUsesNativeAppearance();
+    BOOL ameIsElement  = (view.layer.cornerRadius > 0.0);
+    BOOL ameSolidView  = !ameHasBgView || (ameNativeView && ameIsElement);
+    if (ameSolidView) {
         NSLog(@"[glass] applyEffectToView: [GLASS-BG] %@ ⇒ 实底/不透明 on %@ (radius=%.1f hasBg=%d)",
-              ameNativeSolidView ? @"原生风格" : @"无自定义背景",
-              NSStringFromClass(view.class), (double)view.layer.cornerRadius, (int)[self hasBackground]);
+              !ameHasBgView ? @"无自定义背景" : @"原生风格·元素",
+              NSStringFromClass(view.class), (double)view.layer.cornerRadius, (int)ameHasBgView);
         for (UIView *subview in [view.subviews copy]) {
             if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == kBackgroundBlurTag) {
                 [subview removeFromSuperview];
             }
         }
         AmeDetachGlassRim(view);
-        CGFloat ameSolidRadius = view.layer.cornerRadius;
-        if (ameSolidRadius > 0.0) {
-            view.backgroundColor = [UIColor secondarySystemBackgroundColor];   // 卡片 / 面板:原生卡面实底
+        if (ameIsElement) {
+            view.backgroundColor = [self ame_solidElementBaseColor];   // 卡片 / 面板 / 胶囊:与前景同极性的实底
         } else {
-            view.backgroundColor = [UIColor systemBackgroundColor];           // 整页:原生页面底色
+            view.backgroundColor = [UIColor systemBackgroundColor];    // 整页:仅「无壁纸」时走到这里
+        }
+        return;
+    }
+
+    // ★ [GLASS-BG] 原生风格 + 有壁纸 + 页面级视图(radius==0)⇒ 页面底必须让壁纸可见:
+    //   不叠任何玻璃层(那会把壁纸糊掉/盖掉),按当前 UI 效果给透明底(与 makeViewControllerTransparent: 同口径)。
+    if (ameNativeView) {
+        NSLog(@"[glass] applyEffectToView: [GLASS-BG] 原生风格·页面(有壁纸) ⇒ 页面底透出壁纸 on %@",
+              NSStringFromClass(view.class));
+        for (UIView *subview in [view.subviews copy]) {
+            if ([subview isKindOfClass:[UIVisualEffectView class]] && subview.tag == kBackgroundBlurTag) {
+                [subview removeFromSuperview];
+            }
+        }
+        AmeDetachGlassRim(view);
+        if (self.uiEffect == BackgroundUIEffectBlur) {
+            view.backgroundColor = [UIColor clearColor];
+        } else {
+            view.backgroundColor = [[UIColor systemBackgroundColor] colorWithAlphaComponent:1.0 - self.uiOpacity];
         }
         return;
     }
@@ -1276,10 +1312,11 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     }
 
     // ★ [GLASS-BG] 集合卡片实底判定(同 applyEffectToView:,见那里注释):
-    //   实际生效风格=native ⇒ 一律实底/不透明;生效=liquid 但无壁纸可透 ⇒ 也给实底。
-    //   根治主页便当盒卡 / 实例卡 / 新闻卡 / 公告卡在无壁纸或原生风格下整片透明。
+    //   · 实际生效风格=native ⇒ 卡片是【元素】⇒ 给实底(卡片可挡背景);
+    //   · 生效=liquid 但无壁纸可透 ⇒ 也给实底;liquid + 有壁纸 ⇒ 走下面的玻璃路径(不变)。
+    //   ★ 实底颜色取 `ame_solidElementBaseColor`(与自适应前景同极性)⇒ 元素有底 + 文字可读。
     BOOL ameNativeSolidCard = AMEGlassStyleUsesNativeAppearance();
-    if (ameNativeSolidCard || ![self hasBackground]) {
+    if (ameNativeSolidCard || ![self hasUIVisibleBackground]) {
         NSLog(@"[glass] applyEffectToCollectionViewCell: [GLASS-BG] %@ ⇒ 卡片实底/不透明 (radius=%.1f)",
               ameNativeSolidCard ? @"原生风格" : @"无自定义背景", (double)ameEffectiveRadius);
         for (UIView *subview in [cell.contentView.subviews copy]) {
@@ -1288,7 +1325,7 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
             }
         }
         cell.backgroundColor = [UIColor clearColor];
-        cell.contentView.backgroundColor = [UIColor secondarySystemBackgroundColor];
+        cell.contentView.backgroundColor = [self ame_solidElementBaseColor];   // ★ [BG-CONTRAST] 卡面实底(与前景同极性)
         return;
     }
 
@@ -1442,6 +1479,9 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 
 - (void)appWillEnterForeground {
     [self resumeVideo];
+    // ★ [NO-RIM] 回前台:视图可能被系统重建/重排(或此前被移出窗口树而漏过摘除)⇒
+    //   按当前开关/风格/设置页再重判一次自绘高光(关着 / 设置页 ⇒ 摘干净)。
+    [self ameReassertRimPolicyOnAllWindows];
 }
 
 - (void)pauseVideo {
@@ -1572,7 +1612,87 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     [self ame_invalidateForegroundContrast];
 }
 
+#pragma mark - ★ [BG-RESTORE] 「恢复」= 撤销上一次「清除背景」(恢复清除前那张壁纸)
+
+// 清除前把当前壁纸【文件本体】复制一份到 backgrounds/last_background.<ext>,并记下类型。
+// ★ 只记路径是不够的:clearBackgroundInternal 随后会删除原文件 ⇒ 必须留【副本】才能回退。
+- (void)ame_snapshotCurrentBackgroundForRestore {
+    if (self.currentType == BackgroundTypeNone || self.currentBackgroundPath.length == 0) return;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:self.currentBackgroundPath]) return;
+
+    NSString *folder = [self backgroundsFolderPath];
+    NSString *ext = [self.currentBackgroundPath pathExtension];
+    if (ext.length == 0) ext = (self.currentType == BackgroundTypeVideo) ? @"mp4" : @"jpg";
+    NSString *lastPath = [folder stringByAppendingPathComponent:
+                          [NSString stringWithFormat:@"last_background.%@", ext]];
+
+    // 先清掉旧的 last_background.*(避免残留多个副本 / 旧扩展名)
+    for (NSString *f in [fm contentsOfDirectoryAtPath:folder error:nil]) {
+        if ([f hasPrefix:@"last_background."]) {
+            [fm removeItemAtPath:[folder stringByAppendingPathComponent:f] error:nil];
+        }
+    }
+
+    NSError *err = nil;
+    if ([fm copyItemAtPath:self.currentBackgroundPath toPath:lastPath error:&err]) {
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        [d setObject:lastPath forKey:kLastBackgroundPathKey];
+        [d setInteger:self.currentType forKey:kLastBackgroundTypeKey];
+        [d synchronize];
+        NSLog(@"[bg-restore] 已保留「清除前」的背景副本: %@ (type=%ld)", lastPath, (long)self.currentType);
+    } else {
+        NSLog(@"[bg-restore] 背景副本拷贝失败(不影响清除本身): %@", err.localizedDescription ?: @"unknown");
+    }
+}
+
+- (nullable NSString *)lastBackgroundPath {
+    NSString *p = [[NSUserDefaults standardUserDefaults] stringForKey:kLastBackgroundPathKey];
+    if (p.length == 0) return nil;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:p]) return nil;   // 副本被清理/删除 ⇒ 视为无可恢复
+    return p;
+}
+
+- (BOOL)canRestoreLastBackground {
+    return [self lastBackgroundPath] != nil;
+}
+
+- (void)restoreLastBackgroundWithCompletion:(void (^ _Nullable)(BOOL success, NSError * _Nullable error))completion {
+    NSString *p = [self lastBackgroundPath];
+    if (p.length == 0) {
+        if (completion) {
+            completion(NO, [NSError errorWithDomain:@"BackgroundManager" code:6
+                                           userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_9113", nil)}]);
+        }
+        return;
+    }
+    NSInteger type = [[NSUserDefaults standardUserDefaults] integerForKey:kLastBackgroundTypeKey];
+    NSLog(@"[bg-restore] 「恢复」= 重新设为清除前的背景: %@ (type=%ld)", p, (long)type);
+    if (type == BackgroundTypeVideo) {
+        [self setVideoBackgroundWithURL:[NSURL fileURLWithPath:p]
+                             completion:^(BOOL success, NSError * _Nullable error) {
+            NSLog(@"[bg-restore] 恢复(视频)%@", success ? @"成功" : @"失败");
+            if (completion) completion(success, error);
+        }];
+        return;
+    }
+    UIImage *img = [UIImage imageWithContentsOfFile:p];
+    if (!img) {
+        if (completion) {
+            completion(NO, [NSError errorWithDomain:@"BackgroundManager" code:7
+                                           userInfo:@{NSLocalizedDescriptionKey: localize(@"i18n_str_9113", nil)}]);
+        }
+        return;
+    }
+    [self setImageBackground:img completion:^(BOOL success, NSError * _Nullable error) {
+        NSLog(@"[bg-restore] 恢复(图片)%@", success ? @"成功" : @"失败");
+        if (completion) completion(success, error);
+    }];
+}
+
 - (void)clearBackgroundInternal {
+    // ★ [BG-RESTORE] 先快照(文件本体)再删除 ⇒ 「恢复」能把这张图设回来(而不是回到默认渐变)。
+    [self ame_snapshotCurrentBackgroundForRestore];
     [self cleanupVideoPlayer];
     
     if (self.currentBackgroundPath) {
@@ -1589,18 +1709,22 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     return self.currentType != BackgroundTypeNone && self.currentBackgroundPath != nil;
 }
 
-// ★ [GLASS-BG] 续:「壁纸是否会在 UI 上真的透出」= 有自定义壁纸【且】实际生效风格 = 液态玻璃。
-//   用户拍板「如果是原生就不透」⇒ 原生风格(native,含 iOS<26 强制原生)下页面/卡片/面板/行/胶囊
-//   一律走系统实底,没有任何「透」的位置 ⇒ 壁纸在这一风格下不参与 UI。
-//   各处「按壁纸把页面透明化 / 按壁纸取白字」的分支都必须改问这一条,否则会:
-//     (a) 把本方法/applyEffectTo*: 刚做好的实底页面又清成透明(透出窗口层的渐变/壁纸);
-//     (b) 把按壁纸算出的白字写到浅色实底上(不可读)。
+// ★ [GLASS-BG] ★2026-10-06 用户纠正:「**卡片可以挡住背景,但背景不能完全不显示**」
+//   ⇒ 只要配了自定义壁纸,页面/窗口底就让它透出来(与界面风格无关);元素层(卡片/面板/行/胶囊)
+//     另有实底保证可读 —— 两者是【两个独立判据,不互相抵消】。
+//   因此本方法 == hasBackground(壁纸在所有风格下都可见);保留本名作为
+//   「要不要透明化页面 / 要不要按壁纸取前景色」的统一语义入口(32 处调用点沿用)。
 //   ★ 与 hasBackground 的分工 —— 别混用:
 //     · hasBackground        = 「配置了壁纸」(背景安装、亮度取样、设置页展示 用这个);
-//     · hasUIVisibleBackground = 「本风格下壁纸可见」(判断要不要透明化/要不要按壁纸调前景 用这个)。
+//     · hasUIVisibleBackground = 「壁纸会在 UI 上透出」(判断要不要透明化/要不要按壁纸调前景 用这个)。
 - (BOOL)hasUIVisibleBackground {
-    if (AMEGlassStyleUsesNativeAppearance()) return NO;   // 原生 ⇒ 不透:壁纸不参与 UI
-    return [self hasBackground];
+    // ★ [FONT-SIMPLE] 原生风格 ⇒ 固定两套配色(浅=白底黑字 / 深=黑底白字),壁纸【不参与 UI】。
+    //   用户拍板:「原生就是黑底白字或者白底黑字,就这两样,背景管他呢」。
+    //   ⇒ 返回 NO:32 处调用点(透明化 / 按壁纸取前景 / 页面底)会自动落到「实底 + 语义色」分支,
+    //     从而保证【任何界面文字都清楚可读】(不会再出现半亮半不亮 / 灰糊)。
+    //   ★ 液态玻璃路径不走这里(AMEFontSimpleActive 只在原生风格下为真)⇒ 壁纸 + 自适应完全不变。
+    if (AMEFontSimpleActive()) return NO;
+    return [self hasBackground];   // ★ 所有风格下都可见(「不透」只针对元素底,不针对页面/窗口底)
 }
 
 - (BOOL)hasImageBackground {
@@ -1680,6 +1804,10 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     (void)[self representativeBackgroundLuminance];   // 立即重算一次(图片同步;视频转异步)
     NSLog(@"[bg-contrast] 背景已刷新 · %@", [self foregroundDiagnostics]);
     [[NSNotificationCenter defaultCenter] postNotificationName:AMEForegroundContrastChangedNotification object:nil];
+    // ★ [NO-RIM] 换壁纸/换视频/清除/恢复 都会走到这里 ⇒ 是「背景变更」的唯一漏斗:
+    //   顺手把自绘高光按【当前开关/风格/设置页】在全窗重判一次(关着 / 设置页 ⇒ 摘干净),
+    //   杜绝「每次换壁纸高光都自己冒出来」(历史残留 + 背景换了才被看见)。
+    [self ameReassertRimPolicyOnAllWindows];
 }
 
 // 视频:首帧异步取一次(不阻塞主线程);取到前返回 -1(未知 ⇒ 走现状语义色,绝不会闪成错色)
@@ -1751,9 +1879,33 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     return [UIColor labelColor];
 }
 
+// ★ [BG-CONTRAST][GLASS-BG] 元素(卡片/面板/行/胶囊)的【实底】颜色 —— 与 foregroundColorForRole:
+//   同极性,保证「元素有底(可挡背景)」与「文字可读」两个判据不互相抵消:
+//     · 无自定义壁纸 / 亮度未知(视频未取样)⇒ 前景=语义色(labelColor 族,跟随系统外观)
+//       ⇒ 实底也用系统卡面色 secondarySystemBackgroundColor(与语义色天然配对,浅深模式都可读);
+//     · 浅壁纸 ⇒ 前景=深字 ⇒ 浅实底;
+//     · 深壁纸 ⇒ 前景=白字 ⇒ 深实底。
+//   ★ 别用 `secondarySystemBackgroundColor` 硬扛「深壁纸 ⇒ 白字」——那在浅色模式下是近白色 ⇒ 白字看不见。
+- (UIColor *)ame_solidElementBaseColor {
+    // ★ [FONT-SIMPLE] 原生风格 ⇒ 元素实底也用【系统语义卡面色】(跟随浅色/深色外观):
+    //   浅色模式=近白、深色模式=近黑 ⇒ 与下面的语义前景(labelColor 一族)天然配对,恒可读。
+    //   不再与壁纸亮度绑定(那正是「灰糊 / 半亮」的来源)。
+    if (AMEFontSimpleActive()) {
+        return [UIColor secondarySystemBackgroundColor];
+    }
+    if (![self hasBackground]) {
+        return [UIColor secondarySystemBackgroundColor];
+    }
+    if (self.foregroundMode == AMEForegroundModeAuto && [self representativeBackgroundLuminance] < 0.0) {
+        return [UIColor secondarySystemBackgroundColor];   // 前景=语义色(亮度未知)⇒ 系统卡面
+    }
+    return [self backgroundIsLight] ? [UIColor colorWithWhite:0.95 alpha:1.0]    // 亮壁纸 ⇒ 深字 ⇒ 浅实底
+                                    : [UIColor colorWithWhite:0.12 alpha:1.0];   // 暗壁纸 ⇒ 白字 ⇒ 深实底
+}
+
 - (BOOL)backgroundIsLight {
-    // ★ [GLASS-BG] 原生风格 ⇒ 一律实底系统色,不做壁纸亮度自适应(与 foregroundColorForRole: 同口径)
-    if (AMEGlassStyleUsesNativeAppearance()) return NO;
+    // ★ [GLASS-BG] ★2026-10-06 用户纠正后:壁纸在所有风格下都可见 ⇒ 前景/底色【仍按壁纸亮度自适应】,
+    //   不再因「原生风格」而短路(bg 亮度取样本身就是单一真相源)。
     if (![self hasBackground]) return NO;
     if (self.foregroundMode == AMEForegroundModeForceDark)  return YES;   // 强制深字 ⇒ 当作亮底
     if (self.foregroundMode == AMEForegroundModeForceLight) return NO;    // 强制白字 ⇒ 当作暗底
@@ -1763,15 +1915,15 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 }
 
 - (UIColor *)foregroundColorForRole:(AMEForegroundRole)role {
-    // ★ [GLASS-BG] 与 [BG-CONTRAST] 的合并口径(用户拍板「原生就不透」之后):
-    //   实际生效风格=原生 ⇒ 面板/卡片/行已由 applyEffectToView:/applyEffectToCell:/
-    //   applyEffectToCollectionViewCell: 渲染成【系统实底】,壁纸不透出 ⇒ 前景必须回到
-    //   语义色(labelColor 族)。否则 [BG-CONTRAST] 按「深色壁纸 ⇒ 白字」算出来的白字会落在
-    //   浅色实底(secondarySystemBackgroundColor)上 —— 不可读。
-    //   ★ 合并顺序:先判风格(native 直接 semantic),再走 [BG-CONTRAST] 原有的
-    //     hasBackground / 亮度 / 强制模式逻辑(液态玻璃 + 壁纸时行为逐处不变)。
-    if (AMEGlassStyleUsesNativeAppearance()) return [self ame_semanticColorForRole:role];
-    // ★ 兜底:无自定义背景(默认渐变/纯色)⇒ 语义色,观感与改造前一致
+    // ★ [BG-CONTRAST] ★2026-10-06 用户纠正后合并口径:
+    //   壁纸在所有风格下都可见(见 hasUIVisibleBackground)→ 前景【一律按壁纸亮度自适应】
+    //   (深色壁纸 ⇒ 白字;浅色壁纸 ⇒ 深字),与风格无关。
+    //   ★ 与 [GLASS-BG] 的协同:元素(卡片/面板/行)的实底取 `ame_solidElementBaseColor`,
+    //     它与这里的前景【同极性】(深壁纸 ⇒ 白字 + 深实底)⇒ 元素有底与文字可读互不抵消。
+    //   兜底:无自定义背景(默认渐变/纯色)⇒ 语义色,观感与改造前逐像素一致。
+    // ★ [FONT-SIMPLE] 原生风格 ⇒ 直接给系统语义色(浅色外观=黑字 / 深色外观=白字),
+    //   不再按壁纸亮度自适应 —— 这是用户拍板的「固定两套」,也是「文字恒可读」的保证。
+    if (AMEFontSimpleActive()) return [self ame_semanticColorForRole:role];
     if (![self hasBackground]) return [self ame_semanticColorForRole:role];
     CGFloat luma = [self representativeBackgroundLuminance];
     if (luma < 0.0 && self.foregroundMode == AMEForegroundModeAuto) {
@@ -1801,8 +1953,9 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
 
 - (UIColor *)foregroundShadowColorForRole:(AMEForegroundRole)role {
     (void)role;
-    // ★ [GLASS-BG] 原生风格 ⇒ 实底系统色,不需要为“壁纸底”加的可读性投影(见 foregroundColorForRole:)。
-    if (AMEGlassStyleUsesNativeAppearance()) return nil;
+    // ★ [FONT-SIMPLE] 原生风格 ⇒ 固定实底 + 语义色,不需要阴影兜底(阴影只会在实底上发灰,反而更糊)。
+    if (AMEFontSimpleActive()) return nil;
+    // ★ [BG-CONTRAST] ★2026-10-06 用户纠正后:壁纸在所有风格下都可见 ⇒ 阴影(可读性兜底)照旧按壁纸亮度给。
     if (![self hasBackground]) return nil;
     if ([self representativeBackgroundLuminance] < 0.0 && self.foregroundMode == AMEForegroundModeAuto) return nil;
     // 浅色前景 ⇒ 深色投影;深色前景 ⇒ 浅色高光(复杂/中等亮度背景下保住可读性)
@@ -1815,7 +1968,8 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     NSString *lumaStr = (luma < 0.0) ? @"未知" : [NSString stringWithFormat:@"%.3f", luma];
     NSString *modeStr = (self.foregroundMode == AMEForegroundModeForceDark) ? @"强制深"
                       : (self.foregroundMode == AMEForegroundModeForceLight) ? @"强制浅" : @"自动";
-    NSString *fgStr = [self backgroundIsLight] ? @"深色前景" : @"浅色前景";
+    NSString *fgStr = AMEFontSimpleActive() ? @"★[FONT-SIMPLE]固定两套(浅=白底黑字/深=黑底白字)"
+                                            : ([self backgroundIsLight] ? @"深色前景" : @"浅色前景");
     return [NSString stringWithFormat:@"hasBg=%d type=%ld 代表亮度=%@(区块 min=%.2f max=%.2f) 模式=%@ ⇒ %@",
             (int)[self hasBackground], (long)self.currentType, lumaStr,
             self.ameLumaMin, self.ameLumaMax, modeStr, fgStr];
@@ -1852,8 +2006,8 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
     if (isCarrier) {
         [self ameSyncGlassRimStrengthForCurrentStyle];   // ★ [GLASS-STYLE] 原生风格 ⇒ 恒 0
         AmeDetachGlassRim(root);                                // ★ 摘除(先摘,保证只有一层)
-        if (AMEGlassStyleAllowsHandDrawnGlass() && self.glassRimEnabled && self.glassRimStrength > 0.001) {
-            AmeAttachGlassRim(root, root.layer.cornerRadius);   // ★ 按当前开关【补上】(原生/关 ⇒ 内部即时 no-op)
+        if (AmeGlassRimDrawingAllowed()) {   // ★ [NO-RIM] 与贴出时的总闸同一份真相源(开关/强度/风格)
+            AmeAttachGlassRim(root, root.layer.cornerRadius);   // ★ 按当前开关【补上】(原生/关/设置页 ⇒ 内部即时 no-op)
         }
         AmeRefreshGlassRim(root);
     }
@@ -1873,6 +2027,20 @@ static BOOL gAmeGlassRimApplyScheduled = NO;
             [self ameApplyGlassRimSettingsToViewTree:w];
         }
         [[NSNotificationCenter defaultCenter] postNotificationName:@"BackgroundUIEffectChanged" object:nil];
+    });
+}
+
+// ★ [NO-RIM] 背景(壁纸)变更后的「高光策略重判」:只走开关/风格/设置页判定,【不广播通知】
+//   (避免与 ame_invalidateForegroundContrast 自己的广播叠加成循环刷新)。
+//   动机:用户报「每次换壁纸他都自己冒出来(★没开开关★)」—— 换背景会重铺 window 容器、让各页重刷,
+//   任何一处历史残留 / 重建出来的 rim 都会在这时被看见 ⇒ 单靠贴出时的那道闸不够,必须有一次
+//   「变更后按当前开关重判全树」的动作。关着 / 设置页 ⇒ 一律摘除。
+- (void)ameReassertRimPolicyOnAllWindows {
+    [self ameSyncGlassRimStrengthForCurrentStyle];   // ★ 先把 TU 内强度按风格收敛(与总闸同口径)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIWindow *w in [UIApplication sharedApplication].windows) {
+            [self ameApplyGlassRimSettingsToViewTree:w];
+        }
     });
 }
 

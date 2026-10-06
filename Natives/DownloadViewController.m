@@ -720,7 +720,7 @@ typedef NS_ENUM(NSInteger, ModernAssetType) {
     }
     // 重新应用背景透明效果（参照 LauncherPreferencesViewController）
     // 用户可能在外部页面切换了背景设置，回到此页时需重新适配
-    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 原生风格 ⇒ 壁纸不透出
+    if ([[BackgroundManager sharedManager] hasUIVisibleBackground]) {   // ★ [GLASS-BG] 有壁纸 ⇒ 壁纸可见(页面底透出壁纸)
         self.view.backgroundColor = [UIColor clearColor];
         // 对导航栏应用效果（DownloadViewController 被包在 UINavigationController 中）
         UINavigationController *nav = self.navigationController;

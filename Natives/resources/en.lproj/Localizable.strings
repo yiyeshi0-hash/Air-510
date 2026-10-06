@@ -1084,7 +1084,7 @@
 "i18n_str_57" = "UI Effect";
 "i18n_str_60" = "Choose Background Type";
 "i18n_str_61" = "Image Background";
-"i18n_str_62" = "Restore Default Background";
+"i18n_str_62" = "Restore Last Background";
 "i18n_str_63" = "Clear Background";
 "i18n_str_65" = "Semi-transparent";
 "i18n_str_66" = "Choose UI Effect";
@@ -1094,7 +1094,7 @@
 "i18n_str_71" = "Photo Library";
 "i18n_str_72" = "Files";
 "i18n_str_73" = "Choose Video Source";
-"i18n_str_74" = "Are you sure you want to restore the default background settings? This will clear the custom background and reset UI effect settings.";
+"i18n_str_74" = "Restore the background you cleared last time (the image/video before you tapped Clear)?";
 "i18n_str_75" = "Restore";
 "i18n_str_76" = "Are you sure you want to clear the launcher background?";
 "i18n_str_77" = "Clear";
@@ -1964,6 +1964,7 @@
 "i18n_str_1295" = "Import complete";
 "i18n_str_1296" = "Opacity";
 "i18n_str_1297" = "Blur Level";
+"i18n_str_9113" = "Nothing to restore (you have not cleared a background yet)";
 "i18n_str_1298" = "Export";
 "i18n_str_1299" = "%ld sec";
 "i18n_str_1301" = "%ld min";

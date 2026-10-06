@@ -98,11 +98,9 @@ static BOOL E1UsesDarkTokens(UITraitCollection *tc) {
     // ★ [BG-CONTRAST] 有自定义背景 ⇒ 按背景【代表亮度】取深/浅令牌(浅背景用深字,暗背景用白字);
     //   无自定义背景(默认渐变/纯色)⇒ 仍按浅深色模式,与改造前逐像素一致。
     BackgroundManager *bg = [BackgroundManager sharedManager];
-    // ★ [GLASS-BG] 续:实际生效风格=原生 ⇒ 卡片/面板已由 applyEffectToView: 渲染成系统实底
-    //   (secondarySystemBackgroundColor),壁纸不透出 ⇒ 令牌必须回到「跟随系统深浅色」,
-    //   否则「暗壁纸 ⇒ 白字令牌」会写在浅色实底上(不可读)。
-    //   合并顺序:先判风格(native 直接按系统深浅色),再走 [BG-CONTRAST] 原有壁纸亮度分支。
-    if (AMEGlassStyleUsesNativeAppearance()) { return (tc.userInterfaceStyle != UIUserInterfaceStyleLight); }
+    // ★ [GLASS-BG] ★2026-10-06 用户纠正后:壁纸在所有风格下都可见 ⇒ 不再因「原生」短路;
+    //   有壁纸 ⇒ 按【壁纸亮度】取令牌(与 applyEffectToView:/applyEffectTo*Cell: 的实底同极性);
+    //   无壁纸 ⇒ 跟随系统深浅色(与改造前逐像素一致)。
     if ([bg hasUIVisibleBackground]) { return ![bg backgroundIsLight]; }
     return (tc.userInterfaceStyle != UIUserInterfaceStyleLight);
 }

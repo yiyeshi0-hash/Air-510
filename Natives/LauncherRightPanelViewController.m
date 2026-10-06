@@ -1197,6 +1197,8 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
     } completion:nil];
 
     if (self.task) {
+        // ★ [DL-THEN-LAUNCH] 未下完不允许启动:启动/校验/补缺件在途 ⇒ 再点启动只打开统一进度页,绝不进 JLI_Launch。
+        NSLog(@"[DL-THEN-LAUNCH] 启动键被拦截:本实例仍在下载/校验/补缺件 ⇒ 打开统一进度页(不启动)");
         // redesign-download-ui Phase 3 Task 3.4：下载中点击启动按钮改为打开统一进度页。
         // 任务由 MinecraftResourceDownloadTask 内部注册到 DownloadTaskManager，
         // 此处按 rawTask 反查 taskId 后呈现统一进度页。
@@ -1265,7 +1267,8 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
     [alert addAction:[UIAlertAction actionWithTitle:localize(@"Cancel", nil)
                                              style:UIAlertActionStyleCancel
                                            handler:nil]];
-    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];
+    // ★ [DL-THEN-LAUNCH] 走稳定宿主呈现(同缺件提示:防被下载进度页自动 dismiss 带走)。
+    [self norightPresentDurableAlert:alert];
 }
 
 // ★ [LAUNCH-AFTER-DL] 把启动排队到「下载全部结束」之后自动继续；幂等。
@@ -1502,6 +1505,12 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
     BOOL enabled = hasVersion && !self.task;
 
     self.launchButton.enabled = enabled;
+    // ★ [DL-THEN-LAUNCH] 门禁自证:下载/校验在途(self.task != nil)⇒ 启动键置灰(未下完不允许启动)。
+    //   主页底部启动胶囊的 enabled 由 norightPostState 的 launchEnabled 同源转发,故一并受控。
+    NSLog(@"[DL-THEN-LAUNCH] 启动门禁: task=%@ ⇒ 按钮=%@ (hasVersion=%d hasAccount=%d activeTasks=%d)",
+          self.task ? @"进行中(下载/校验/补缺件)" : @"空闲",
+          enabled ? @"可用" : @"置灰(未下完不允许启动)",
+          (int)hasVersion, (int)hasAccount, (int)hasActiveTasks);
     NSString *title;
     if (hasActiveTasks) {
         title = localize(@"i18n_str_434", nil);
@@ -1666,6 +1675,8 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
         NSLog(@"[MISS] required=%lu ⇒ 自动补下（第 %ld/%ld 次）；样例：%@",
               (unsigned long)missing.count, (long)self.missingAutoRedownloadCount,
               (long)kAMEMissingAutoRedownloadMax, sample);
+        // ★ [DL-THEN-LAUNCH] 检测到缺件 ⇒ 立即自动开始下载(不是只弹提示);下载期间启动键置灰。
+        NSLog(@"[DL-THEN-LAUNCH] 缺件 → 立即自动补下(不弹提示、不放行启动);下载完成后由本地核对自动放行");
         [self startDownloadWithVersion:self.missingLaunchVersionObject
                             profileName:PLProfiles.current.selectedProfileName];
         return;
@@ -1754,7 +1765,8 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
         AmeGameLandscapeLockExit();   // ★ [GAME-LANDSCAPE] 取消启动 ⇒ 恢复启动器方向
         [s setInteractionEnabled:YES];
     }]];
-    [[self norightPresenter] presentViewController:alert animated:YES completion:nil];
+    // ★ [DL-THEN-LAUNCH] 走稳定宿主呈现 —— 否则提示会被统一下载进度页的自动 dismiss 一起拆掉。
+    [self norightPresentDurableAlert:alert];
 }
 
 /// ★ [LAUNCH-AFTER-DL][MISS-SET] 本地核对【影响游玩】的启动必需文件（不联网）。
@@ -2388,6 +2400,34 @@ static NSString *ameMissSetResolveLwjglVersion(NSString *profileValue, NSString 
     [[NSNotificationCenter defaultCenter] postNotificationName:AmeRightPanelStateNotification
                                                         object:nil
                                                       userInfo:info];
+}
+
+/// ★ [DL-THEN-LAUNCH] 「缺件 / 启动门禁」类提示的【稳定】呈现 —— 绝不被会自动消失的临时页带走。
+///   ★ 根因(实测,行号见交付报告):提示原先直接挂在 `norightPresenter`(窗口最顶层 VC)上。
+///     缺件流程里那一刻的最顶层正是【统一下载进度页 PLTaskProgressViewController】,而它
+///     `autoDismissOnCompletion=YES`(PLTaskProgressViewController.m:470),任务完成 **1.5s**
+///     (同文件 :14)后自动 `dismissViewControllerAnimated:`(同文件 :1258-1276)。提示是它的子呈现 ⇒ 被一起拆掉
+///     ⇒ 用户报的「弹缺件 → 闪一秒钟消失 → 也不启动」。
+///   做法:① 顶上若是该进度页 ⇒ 先收起它;② 等一拍让呈现链清空;③ 再挂到当前最稳定宿主上。
+- (void)norightPresentDurableAlert:(UIAlertController *)alert {
+    if (!alert) return;
+    UIViewController *top = [self norightPresenter];
+    BOOL topIsProgress = [top isKindOfClass:[PLTaskProgressViewController class]];
+    if (topIsProgress) {
+        NSLog(@"[DL-THEN-LAUNCH] 缺件/门禁提示:先收起会自动消失的统一下载进度页(防「闪一下消失」)");
+        [PLTaskProgressViewController dismissActiveProgressAnimated:NO];
+    }
+    __weak typeof(self) weakSelf = self;
+    NSTimeInterval delay = topIsProgress ? 0.30 : 0.0;   // 让 dismiss 真正生效后再挂
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) s = weakSelf;
+        if (!s) return;
+        UIViewController *host = [s norightPresenter];
+        NSLog(@"[DL-THEN-LAUNCH] 缺件/门禁提示弹出:宿主=%@ (presented=%@)",
+              NSStringFromClass(host.class), NSStringFromClass(host.presentedViewController.class));
+        [host presentViewController:alert animated:YES completion:nil];
+    });
 }
 
 /// ★ present 宿主:容器已 0×0 + hidden,自身不再是可靠的呈现宿主。

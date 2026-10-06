@@ -813,6 +813,16 @@ static __weak PLTaskProgressViewController *PLTaskProgressActiveInstance = nil;
     [topVC presentViewController:vc animated:YES completion:nil];
 }
 
+/// ★ [DL-THEN-LAUNCH] 收起同屏活动进度页。见头文件说明：缺件/门禁提示必须挂在「不会被自动拆掉」
+///   的宿主上，否则会随本页 1.5s 自动 dismiss 一起消失（→ 用户报的「闪一秒钟」）。
++ (void)dismissActiveProgressAnimated:(BOOL)animated {
+    PLTaskProgressViewController *active = PLTaskProgressActiveInstance;
+    if (active && (active.view.window != nil || active.isBeingPresented)) {
+        NSLog(@"[DL-THEN-LAUNCH] 收起统一下载进度页(为缺件/门禁提示让出稳定宿主) taskId=%@", active.taskId);
+        [active dismissViewControllerAnimated:animated completion:nil];
+    }
+}
+
 /// 从 keyWindow 根视图控制器逐层找出最顶层 VC（含已 present 的页面）
 + (UIViewController *)pl_topMostViewController {
     UIWindow *keyWindow = nil;

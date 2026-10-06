@@ -137,7 +137,7 @@ static NSInteger const kSectionVersions    = 1;
     self.titleLabel = [[UILabel alloc] init];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     self.titleLabel.font = [UIFont systemFontOfSize:titleFont weight:UIFontWeightSemibold];
-    self.titleLabel.textColor = ([[BackgroundManager sharedManager] hasUIVisibleBackground] ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor labelColor]);   // ★ [BG-CONTRAST] ★ [GLASS-BG] 原生风格 ⇒ 面已实底,走语义色(原为 whiteColor:那是给“深色渐变底”用的,实底上会看不见)
+    self.titleLabel.textColor = ([[BackgroundManager sharedManager] hasUIVisibleBackground] ? AMEForegroundColor(AMEForegroundRolePrimary) : [UIColor labelColor]);   // ★ [BG-CONTRAST] 壁纸可见 ⇒ 按壁纸明暗取自适应前景(原为 whiteColor:浅壁纸下会看不见)
     self.titleLabel.adjustsFontForContentSizeCategory = NO;
     [self.contentContainer addSubview:self.titleLabel];
 
